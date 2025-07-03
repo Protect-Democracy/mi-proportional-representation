@@ -11,7 +11,7 @@ from data_loading import (
 )
 
 
-def district_heatmap(precincts, districts):
+def district_heatmap(precincts, districts, filename=None):
     fig = plt.figure(figsize=[20, 20])
     plt.rcParams["savefig.facecolor"] = "1a1b26"
     plt.rcParams["figure.facecolor"] = "1a1b26"
@@ -33,20 +33,23 @@ def district_heatmap(precincts, districts):
     districts.plot(edgecolor="k", linewidth=2.0, ax=plt.gca(), facecolor="None")
     plt.gca().set_axis_off()
     plt.tight_layout()
-    # plt.savefig('house_maps.pdf')
+    if filename is not None:
+        plt.savefig("plots/" + filename)
     plt.show()
 
 
-def partisanship_scatterplot(house_subset, senate_subset):
+def partisanship_scatterplot(house_subset, senate_subset, filename=None):
     plt.scatter(house_subset["np_score"], house_subset["2partyshare"], label="house")
     plt.scatter(senate_subset["np_score"], senate_subset["2partyshare"], label="senate")
     plt.xlabel("Shor-McCarty score")
     plt.ylabel("2024 2-party share")
     plt.legend()
+    if filename is not None:
+        plt.savefig("plots/" + filename)
     plt.show()
 
 
-def pop_density_map(blocks):
+def pop_density_map(blocks, filename=None):
     df = blocks.copy()
     df["popdensity"] = df["POP20"] / df["ALAND20"]
     fig = plt.figure(figsize=[20, 20])
@@ -55,18 +58,23 @@ def pop_density_map(blocks):
     )
     plt.gca().set_axis_off()
     plt.tight_layout()
-    # plt.savefig("mi_pop_density.pdf")
+    if filename is not None:
+        plt.savefig("plots/" + filename)
     plt.show()
 
 
-def party_share_plot(data):
+def party_share_plot(data, filename=None):
     df = data.copy()
     df["2partyshare"] = df["DONALD J. TRUMP"] / (
         df["DONALD J. TRUMP"] + df["KAMALA D. HARRIS"]
     )
     fig = plt.figure(figsize=[15, 15])
     df.plot("2partyshare", ax=plt.gca(), cmap="coolwarm", vmin=0, vmax=1)
-    plt.gca().axis(None)
+
+    plt.gca().set_axis_off()
+    plt.tight_layout()
+    if filename is not None:
+        plt.savefig("plots/" + filename)
     plt.show()
 
 
@@ -78,7 +86,7 @@ if __name__ == "__main__":
     shapefiles = load_and_format_precincts_shapefile()
     df = merge_shapefiles_and_votes(votes, shapefiles)
 
-    house2024, senate2024, house_subset, senate_subset = load_legislature()
+    house2024, senate2024, house_subset, senate_subset = load_legislature(df)
 
     # Now look at Census shapefiles (for official population estimates)
     blocks = load_tiger_blocks()
@@ -94,7 +102,7 @@ if __name__ == "__main__":
     data = dissolve_small_into_large(blocks, df, identifier_column="unique_precinct")
     print(f"Data ({len(data)} precincts) loaded successfully!")
 
-    party_share_plot(df)
+    party_share_plot(df, filename="party_share_plot.pdf")
     district_heatmap(df, house2024)
     district_heatmap(df, senate2024)
     partisanship_scatterplot(house_subset, senate_subset)

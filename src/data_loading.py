@@ -328,7 +328,7 @@ def load_legislature(precincts):
     )
 
     # current legislature makeup
-    plural = pd.read_csv("plural.csv")
+    plural = pd.read_csv("raw_data/plural.csv")
 
     # Let's see how many people are in both the shor-mccarty data
     # and were also elected in 2024
