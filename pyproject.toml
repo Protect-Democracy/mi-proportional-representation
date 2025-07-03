@@ -1,0 +1,15 @@
+[project]
+name = "mi-proportional-representation"
+version = "0.1.0"
+description = "Simulating the outcome of various proportional representation systems in Michigan"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "geopandas>=1.1.1",
+    "gerrychain>=0.3.2",
+    "ipython>=9.3.0",
+    "libpysal>=4.13.0",
+    "matplotlib-backend-wezterm>=2.1.2",
+    "networkx>=3.5",
+    "python-lsp-server[all]>=1.12.2",
+]

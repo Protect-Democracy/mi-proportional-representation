@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?><metadata>
+    <idinfo>
+        <citation>
+            <citeinfo>
+                <title>2024 Voting Precincts</title>
+                <onlink>https://gisagocss.state.mi.us/arcgis/rest/services/OpenData/boundaries/MapServer/9</onlink>
+            </citeinfo>
+        </citation>
+        <descript>
+            <abstract>The 2024 Precinct data set represents the geography used for the 2024 election cycle. Information was collected from local election officials along with county/local GIS authorities as well as a validation done by most, but not all jurisdictions. BOE maintains every effort to keep this data correct, however the data set is only as good as the information received from the local election official.</abstract>
+        </descript>
+        <spdom>
+            <bounding>
+                <westbc>-90.5567</westbc>
+                <eastbc>-82.0649</eastbc>
+                <northbc>48.2841</northbc>
+                <southbc>41.6321</southbc>
+            </bounding>
+        </spdom>
+        <keywords>
+            <theme>
+                <themekt>None</themekt>
+                <themekey>michigan</themekey>
+                <themekey>boundaries</themekey>
+                <themekey>boe</themekey>
+                <themekey>vtd</themekey>
+                <themekey>mdos</themekey>
+                <themekey>vote</themekey>
+                <themekey>election</themekey>
+            </theme>
+        </keywords>
+        <accconst>None</accconst>
+        <useconst>This dataset is a public record and, as more fully described below, there are no restrictions on the use, reproduction, or distribution of this dataset. Notwithstanding the foregoing, the public release of this dataset should not be construed, expressed or implied, as to whether any use constitutes a legally permissible purpose. It is the sole responsibility of the user to determine if the data is usable for their purposes. This dataset is provided “AS IS” and on an “AS AVAILABLE” basis. The State of Michigan (“State”) makes no warranties, express or implied, regarding the accuracy, adequacy, reliability, timeliness, or completeness of this dataset. The State also does not make any warranties, express or implied, for the continued quality, accuracy, or currency of this dataset after it has been downloaded, nor the quality or accuracy of any analyses or re-uses of this dataset. THE STATE DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS DATASET AND ANY INFORMATION PROVIDED TO YOU, INCLUDING THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT OF PROPRIETARY RIGHTS. THE STATE WILL NOT BE LIABLE, REGARDLESS OF THE FORM OF ACTION, WHETHER IN CONTRACT, TORT, NEGLIGENCE, STRICT LIABILITY OR BY STATUTE OR OTHERWISE, FOR ANY CLAIM FOR CONSEQUENTIAL, INCIDENTAL, INDIRECT, OR SPECIAL DAMAGES, INCLUDING WITHOUT LIMITATION LOST PROFITS AND LOST BUSINESS OPPORTUNITIES, RELATED TO THE ACCESS OR USE OF THIS DATASET. IN NO EVENT WILL THE STATE BE LIABLE FOR ANY AMOUNTS THAT MAY RESULT FROM THE ACCESS OR USE OF THIS DATASET, REGARDLESS OF THE FORM OF ACTION, WHETHER IN CONTRACT, TORT, NEGLIGENCE, STRICT LIABILITY, OR BY STATUTE OR OTHERWISE. You forever release the State, its departments, subdivisions, officers, and employees from all claims, rights, actions, demands, damages, liabilities, expenses and fees, which arise out of or relate to your access or use of this dataset. You must defend, indemnify and hold the State, its departments, subdivisions, officers, and employees harmless, without limitation, from and against all actions, claims, losses, liabilities, damages, costs, attorney fees, and expenses (including those required to establish the right to indemnification) arising out of or relating to your access or use of this dataset. The State reserves the right to modify or remove this dataset for any reason, without notice, at any time. Nothing in these terms constitutes or is intended to be a limitation upon, or waiver of, any privileges and immunities that apply to the State. These terms are governed by and interpreted under the laws of the State of Michigan without regard to conflict of laws provisions. These terms do not apply to other materials or content, including maps or logos, that may be located on the site or portal containing this dataset and that may be protected by intellectual property rights such copyright, trademark, or patent. Nothing in these terms should be construed, expressed or implied, as impacting any existing rights or licenses in such materials or content, if any.</useconst>
+        <datacred>Center for Shared Solutions, Department of Technology, Management, and Budget, State of Michigan</datacred>
+    </idinfo>
+    <eainfo>
+        <detailed>
+            <attr>
+                <attrlabl>OBJECTID</attrlabl>
+                <attrdef>Unique Identifier for the record</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>PRECINCTID</attrlabl>
+                <attrdef>Unique Identifier for the precinct composed of County/Jurisdiction/WardPrecinct value</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>ELECTIONYE</attrlabl>
+                <attrdef>Election Year</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>COUNTYFIPS</attrlabl>
+                <attrdef>County Federal Information Processing Standards code</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>MCDFIPS</attrlabl>
+                <attrdef>Minor Civil Division Federal Information Processing Standards code for jurisdiction</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>WARD</attrlabl>
+                <attrdef>Ward value if used</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>PRECINCT</attrlabl>
+                <attrdef>Precinct Value</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>NAME</attrlabl>
+                <attrdef>Code linking data to Census Data</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>VTDST</attrlabl>
+                <attrdef>Contains the value of the 2020 Census’ “Voter (Tabulation) District”, or VTD.  The Census/TIGER VTD contains one or more census blocks that approximates the geography of the precinct.  Because they’re based upon census blocks, the VTD does not necessarily match the actual geography of the precinct.  For more information refer to Chapter 14 of the Geographic Areas Reference Manual (Nov 1994) (Ch14GARM.pdf (census.gov))</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>Precinct_Long_Name</attrlabl>
+                <attrdef>Long Text Name for Precinct</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>Precinct_Short_Name</attrlabl>
+                <attrdef>Short Text Name for Precinct</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>Tabulator_Voter_Assist</attrlabl>
+                <attrdef>Description of voting equipment used in the precinct including vendor</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>Jurisdiction</attrlabl>
+                <attrdef>Text name of jurisdiction</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>Registered_Voters</attrlabl>
+                <attrdef>Count of registered voters for 2024</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>Active_Voters</attrlabl>
+                <attrdef>Count of active voters for 2024</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>Shape</attrlabl>
+                <attrdef>Geometry type field</attrdef>
+            </attr>
+            <attr>
+                <attrlabl>Shape.STArea()</attrlabl>
+            </attr>
+            <attr>
+                <attrlabl>Shape.STLength()</attrlabl>
+            </attr>
+        </detailed>
+        <overview>
+            <eaover>NOTE: FIELD NAMES ARE TRUNCATED TO 10 CHARACTERS WHEN DOWNLOADING A SHAPEFILE</eaover>
+        </overview>
+    </eainfo>
+    <metainfo>
+        <metc>
+            <cntinfo>
+                <cntorgp>
+                    <cntorg>Bureau of Elections</cntorg>
+                    <cntper>Dave Tarrant</cntper>
+                </cntorgp>
+                <cntaddr>
+                    <addrtype>mailing and physical</addrtype>
+                    <address>430 W Allegan St. 1st Floor</address>
+                    <city>Lansing</city>
+                    <state>MI</state>
+                    <postal>48918</postal>
+                </cntaddr>
+                <cntemail>ElectionData@michigan.gov</cntemail>
+            </cntinfo>
+        </metc>
+        <metstdn>FGDC Content Standard for Digital Geospatial Metadata</metstdn>
+        <metstdv>FGDC-STD-001-1998</metstdv>
+        <mettc>local time</mettc>
+    </metainfo>
+</metadata>
