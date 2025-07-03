@@ -1,7 +1,7 @@
 # mi-proportional-representation
 
 Repo for doing analysis of Michigan elections under different proportional electoral systems.
-[party_share_plot.pdf](https://github.com/user-attachments/files/21043868/party_share_plot.pdf)
+![party_share_plot](https://github.com/user-attachments/assets/1bf738fc-f7f6-4b9f-b549-8232258110fe)
 
 ## Usage
 
