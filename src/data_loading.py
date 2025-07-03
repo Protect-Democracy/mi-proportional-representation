@@ -1,6 +1,10 @@
 import geopandas as gp
 import pandas as pd
 import numpy as np
+import requests
+import zipfile
+import os
+
 from utils import dissolve_small_into_large
 
 
@@ -345,6 +349,64 @@ def load_legislature(precincts):
     return house2024, senate2024, house_subset, senate_subset
 
 
+def load_tiger_blocks():
+    """
+    Loads the TIGER/Line block shapefile for Michigan (FIPS 26) for the year 2024.
+
+    This function checks for a local copy of the shapefile first. If it's not
+    found, it downloads the zip archive from the US Census Bureau's FTP server,
+    extracts it, and then loads it into a GeoDataFrame. The data is then
+    re-projected to the specified CRS ("EPSG:3078").
+
+    Returns:
+        geopandas.GeoDataFrame: A GeoDataFrame containing the census blocks.
+    """
+    # Define the URL for the TIGER shapefile and the local file paths
+    url = "https://www2.census.gov/geo/tiger/TIGER2024/TABBLOCK20/tl_2024_26_tabblock20.zip"
+    local_dir = "raw_data/tiger_blocks"
+    shp_filename = "tl_2024_26_tabblock20.shp"
+    local_shp_path = os.path.join(local_dir, shp_filename)
+    local_zip_path = os.path.join(local_dir, os.path.basename(url))
+
+    # Check if the shapefile already exists. If not, download and extract it.
+    if not os.path.exists(local_shp_path):
+        print(f"Shapefile not found locally. Downloading from {url}...")
+
+        # Create the local directory if it doesn't exist
+        os.makedirs(local_dir, exist_ok=True)
+
+        # Download the file
+        try:
+            with requests.get(url, stream=True) as r:
+                r.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+                with open(local_zip_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            print("Download complete.")
+
+            # Extract the zip file
+            with zipfile.ZipFile(local_zip_path, "r") as zip_ref:
+                zip_ref.extractall(local_dir)
+            print(f"Extracted files to {local_dir}")
+
+            # Clean up the downloaded zip file
+            os.remove(local_zip_path)
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error downloading file: {e}")
+            return None  # Or handle the error as needed
+    else:
+        print(f"Found local shapefile at {local_shp_path}. Loading...")
+
+    # Load the shapefile using geopandas
+    blocks = gp.read_file(local_shp_path)
+
+    # Reproject the data to the desired coordinate reference system
+    blocks = blocks.to_crs("EPSG:3078")
+
+    return blocks
+
+
 if __name__ == "__main__":
     # Load voting results
     votes, candidate_columns = load_and_format_votes()
@@ -356,8 +418,7 @@ if __name__ == "__main__":
     house2024, senate2024, house_subset, senate_subset = load_legislature()
 
     # Now look at Census shapefiles (for official population estimates)
-    blocks = gp.read_file("raw_data/tiger_blocks/tl_2024_26_tabblock20.shp")
-    blocks = blocks.to_crs("EPSG:3078")
+    blocks = load_tiger_blocks()
     df["unique_precinct"] = (
         df["CountyCode"].astype(str)
         + "_"

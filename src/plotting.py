@@ -5,6 +5,7 @@ from data_loading import (
     load_and_format_precincts_shapefile,
     load_legislature,
     load_and_format_votes,
+    load_tiger_blocks,
     reallocate_detroit_counting_board_votes,
     merge_shapefiles_and_votes,
 )
@@ -80,8 +81,7 @@ if __name__ == "__main__":
     house2024, senate2024, house_subset, senate_subset = load_legislature()
 
     # Now look at Census shapefiles (for official population estimates)
-    blocks = gp.read_file("raw_data/tiger_blocks/tl_2024_26_tabblock20.shp")
-    blocks = blocks.to_crs("EPSG:3078")
+    blocks = load_tiger_blocks()
     df["unique_precinct"] = (
         df["CountyCode"].astype(str)
         + "_"
