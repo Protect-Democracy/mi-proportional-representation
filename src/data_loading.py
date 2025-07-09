@@ -5,7 +5,7 @@ import requests
 import zipfile
 import os
 
-from utils import dissolve_small_into_large
+from src.utils import dissolve_small_into_large
 
 
 def load_and_format_votes():
@@ -321,12 +321,14 @@ def load_legislature(precincts):
     # put names in first->last name order
     leg["name"] = leg["name"].apply(lambda x: " ".join(x.split(", ")[::-1]))
     house2024 = house2024.merge(
-        leg, left_on="SLDLST", right_on="hdistrict2022", how="inner"
+        leg, left_on="SLDLST", right_on="hdistrict2022", how="left"
     )
     senate2024 = senate2024.merge(
-        leg, left_on="SLDUST", right_on="sdistrict2022", how="inner"
+        leg, left_on="SLDUST", right_on="sdistrict2022", how="left"
     )
 
+    house2024.drop_duplicates("geometry", inplace=True)
+    senate2024.drop_duplicates("geometry", inplace=True)
     # current legislature makeup
     plural = pd.read_csv("raw_data/plural.csv")
 

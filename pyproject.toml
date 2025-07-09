@@ -5,11 +5,21 @@ description = "Simulating the outcome of various proportional representation sys
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "epc>=0.0.5",
     "geopandas>=1.1.1",
     "gerrychain>=0.3.2",
     "ipython>=9.3.0",
     "libpysal>=4.13.0",
     "matplotlib-backend-wezterm>=2.1.2",
     "networkx>=3.5",
+    "orjson>=3.10.18",
+    "packaging>=25.0",
+    "paramiko>=3.5.1",
     "python-lsp-server[all]>=1.12.2",
+    "rapidfuzz>=3.13.0",
+    "setuptools>=80.9.0",
+    "sexpdata>=1.0.2",
+    "six>=1.17.0",
+    "tqdm>=4.67.1",
+    "watchdog>=6.0.0",
 ]

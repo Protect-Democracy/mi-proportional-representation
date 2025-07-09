@@ -1,14 +1,14 @@
 import matplotlib.pyplot as plt
-import geopandas as gp
-from utils import dissolve_small_into_large
+
 from data_loading import (
     load_and_format_precincts_shapefile,
-    load_legislature,
     load_and_format_votes,
+    load_legislature,
     load_tiger_blocks,
-    reallocate_detroit_counting_board_votes,
     merge_shapefiles_and_votes,
+    reallocate_detroit_counting_board_votes,
 )
+from src.utils import dissolve_small_into_large
 
 
 def district_heatmap(precincts, districts, filename=None):

@@ -44,3 +44,30 @@ def dissolve_small_into_large(small, large, identifier_column):
     result[numeric_cols_to_sum] = result[numeric_cols_to_sum].fillna(0)
 
     return result
+
+
+def label_small_with_large(small, large, identifier_column, label_column_name=None):
+    if label_column_name is None:
+        label_column_name = identifier_column
+
+    # Use representative points for stable point-in-polygon join
+    small_points = small.copy()
+    small_points["geometry"] = small.geometry.representative_point()
+
+    # Perform spatial join: each point gets the identifier of the large geometry it falls within
+    joined = gp.sjoin(
+        small_points,
+        large[[identifier_column, "geometry"]],
+        how="left",
+        predicate="within",
+    ).drop_duplicates()
+
+    # Extract the labeling column and align with the original index
+    labels = joined[[identifier_column]]
+    labels.columns = [label_column_name]
+
+    # Merge the labels back into the original 'small' dataframe
+    result = small.copy()
+    result[label_column_name] = labels[label_column_name]
+
+    return result

@@ -11,6 +11,7 @@ Thumbs.db
 log/
 *.log
 
+__pycache__
 # Suggested to add gitignores from Github that are relevant to the
 # language(s) of your project.
 # https://github.com/github/gitignore
