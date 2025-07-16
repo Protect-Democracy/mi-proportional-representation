@@ -5,7 +5,7 @@ import requests
 import zipfile
 import os
 
-from src.utils import dissolve_small_into_large
+from src.utils import dissolve_small_into_large, label_small_with_large
 
 
 def load_and_format_votes():
@@ -68,7 +68,7 @@ def load_and_format_votes():
     # Merge datasets
     votes["CandidateID"] = votes["CandidateID"].astype(str)
     names["CandidateID"] = names["CandidateID"].astype(str)
-    name_fields = ["CandidateID", "FirstName", "MiddleName", "LastName"]
+    name_fields = ["CandidateID", "FirstName", "MiddleName", "LastName", "Party"]
     names_subset = names[name_fields]
     # merge candidate names into votes
     votes = votes.merge(names_subset, on="CandidateID", how="left")
@@ -104,8 +104,8 @@ def load_and_format_votes():
 
     votes = votes.drop_duplicates()  # this now matches the official tallies
 
-    # Identify numeric candidate columns
-    candidate_columns = [c for c in votes["Candidate Name"].unique() if c != ""]
+    # Strip out non-POTUS and non state rep candidates
+    votes = votes[votes["OfficeCode"].apply(lambda x: x == 1 or x == 8)]
 
     # Pivot so now we have 1 row per precinct, 1 column per candidate
     votes = votes.pivot(
@@ -114,6 +114,7 @@ def load_and_format_votes():
         values="Votes",
     ).reset_index()
 
+    # Make new columns for state representatives (republican/democrat/other)
     # Bespoke fixes
     individual_fixes = {
         "MANCHESTER CITY": "MANCHESTER TOWNSHIP",
@@ -121,7 +122,43 @@ def load_and_format_votes():
     votes["CityTownName"] = votes["CityTownName"].apply(
         lambda x: individual_fixes[x] if x in individual_fixes.keys() else x
     )
-    return votes[[v for v in votes.columns if v != ""]], candidate_columns
+    votes = votes[[v for v in votes.columns if v != ""]]
+
+    # Extract state representative results & consolidate
+    names["Candidate Name"] = (
+        names[["FirstName", "MiddleName", "LastName"]]
+        .fillna("")
+        .agg(lambda x: " ".join(part for part in x if part.strip()), axis=1)
+    )
+
+    state_dem_candidates = names[
+        (names["OfficeCode"] == 8) & (names["Party"] == "DEM")
+    ]["Candidate Name"]
+    cols_to_sum = [col for col in votes.columns if col in state_dem_candidates.values]
+    # Sum the values across these columns for every row, all at once
+    votes["STATE_REP_DEM"] = votes[cols_to_sum].sum(axis=1)
+
+    state_gop_candidates = names[
+        (names["OfficeCode"] == 8) & (names["Party"] == "REP")
+    ]["Candidate Name"]
+    cols_to_sum = [col for col in votes.columns if col in state_gop_candidates.values]
+    # Sum the values across these columns for every row, all at once
+    votes["STATE_REP_GOP"] = votes[cols_to_sum].sum(axis=1)
+
+    candidate_columns = [
+        "KAMALA D. HARRIS",
+        "DONALD J. TRUMP",
+        "STATE_REP_GOP",
+        "STATE_REP_DEM",
+    ]
+
+    return votes[
+        [
+            c
+            for c in candidate_columns
+            + ["CountyCode", "PrecinctNumber", "WardNumber", "CityTownName"]
+        ]
+    ], candidate_columns
 
 
 def reallocate_detroit_counting_board_votes(votes, candidate_columns):
@@ -409,15 +446,69 @@ def load_tiger_blocks():
     return blocks
 
 
-if __name__ == "__main__":
-    # Load voting results
+def deal_with_ann_arbor(df: gp.GeoDataFrame, candidate_cols: list, house2024):
+    """
+    Ann Arbor Township is a mess - it has "numerous enclaves" i.e. islands
+    and, more importantly, is a precinct that is split into more than one
+    legislative district. We will split it into two pieces and estimate
+    vote totals by using relative area (not ideal; maybe we can use Census
+    blocks later)
+    """
+
+    cutter = house2024.loc[house2024["SLDLST"] == "023", "geometry"].iloc[0]
+    aa_1 = df.loc[df["Precinct_L"] == "Ann Arbor Township, Precinct 1"].clip(
+        cutter
+    )  # creates a new, 1 row dataframe
+    cutter = house2024.loc[house2024["SLDLST"] == "048", "geometry"].iloc[0]
+    aa_2 = df.loc[df["Precinct_L"] == "Ann Arbor Township, Precinct 1"].clip(cutter)
+
+    aa_0 = df.loc[df["Precinct_L"] == "Ann Arbor Township, Precinct 1"]
+
+    # Update the area of the new precincts
+    aa_2.loc[:, "ShapeSTAre"] = aa_2["geometry"].area
+    aa_1.loc[:, "ShapeSTAre"] = aa_1["geometry"].area
+
+    # Update the border length of new precincts
+    aa_2.loc[:, "ShapeSTLen"] = aa_2["geometry"].length
+    aa_1.loc[:, "ShapeSTLen"] = aa_1["geometry"].length
+
+    # Update the vote totals/registered voters based on area
+    # The boundaries of this township do not appear to be based
+    # on Census blocks, but we should confirm this
+    # TODO: check whether we can use Census blocks instead
+    aa_1_ratio = aa_1.loc[:, "ShapeSTAre"].iloc[0] / aa_0.loc[:, "ShapeSTAre"].iloc[0]
+    aa_2_ratio = aa_2.loc[:, "ShapeSTAre"].iloc[0] / aa_0.loc[:, "ShapeSTAre"].iloc[0]
+
+    aa_1.loc[:, candidate_cols] *= aa_1_ratio
+    aa_2.loc[:, candidate_cols] *= aa_2_ratio
+
+    # Let's pretend that the new precincts are "wards". And assign them to the
+    # right state legislative district
+    aa_1.loc[:, "WARD"] = "1"
+    aa_1.loc[:, "WardNumber"] = "1"
+    aa_1.loc[:, "SLDLST"] = "023"
+    aa_1.loc[:, "SLDUST"] = "015"
+
+    aa_2.loc[:, "WARD"] = "2"
+    aa_2.loc[:, "WardNumber"] = "2"
+    aa_2.loc[:, "SLDLST"] = "048"
+    aa_2.loc[:, "SLDUST"] = "014"
+
+    # Drop old Ann Arbor Township row
+    df = df[df["Precinct_L"] != "Ann Arbor Township, Precinct 1"]
+
+    # Add two new rows
+    return pd.concat([df, aa_1, aa_2])
+
+
+def load_data():
     votes, candidate_columns = load_and_format_votes()
     votes = reallocate_detroit_counting_board_votes(votes, candidate_columns)
 
     shapefiles = load_and_format_precincts_shapefile()
     df = merge_shapefiles_and_votes(votes, shapefiles)
 
-    house2024, senate2024, house_subset, senate_subset = load_legislature()
+    house2024, senate2024, house_subset, senate_subset = load_legislature(df)
 
     # Now look at Census shapefiles (for official population estimates)
     blocks = load_tiger_blocks()
@@ -431,4 +522,35 @@ if __name__ == "__main__":
         + df["PrecinctNumber"].astype(str)
     )
     data = dissolve_small_into_large(blocks, df, identifier_column="unique_precinct")
+
+    # Assign each precinct to a SLDLST and SLDUST
+    data = label_small_with_large(
+        data, house2024[["geometry", "SLDLST"]], identifier_column="SLDLST"
+    )
+
+    data = label_small_with_large(
+        data, senate2024[["geometry", "SLDUST"]], identifier_column="SLDUST"
+    )
+
+    data = deal_with_ann_arbor(
+        data,
+        candidate_cols=candidate_columns + ["Registered", "Active_Vot"],
+        house2024=house2024,
+    )
+
+    data["unique_precinct"] = (
+        data["CountyCode"].astype(str)
+        + "_"
+        + data["CityTownName"].astype(str)
+        + "_"
+        + data["WardNumber"].astype(str)
+        + "_"
+        + data["PrecinctNumber"].astype(str)
+    )
+    return data, house2024, senate2024, house_subset, senate_subset
+
+
+if __name__ == "__main__":
+    # Load voting results
+    data = load_data()
     print(f"Data ({len(data)} precincts) loaded successfully!")
