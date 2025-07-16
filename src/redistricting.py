@@ -14,11 +14,11 @@ from scipy.optimize import minimize
 from scipy.stats import norm
 from tqdm import tqdm
 
-from src.constants import (
+from constants import (
     RECOM_EPSILON,
     RECOM_REGION_SURCHARGE,
 )
-from src.data_loading import (
+from data_loading import (
     load_data,
 )
 
@@ -129,10 +129,10 @@ def graph_from_df(df):
     gdf_neighbors = lp.weights.Queen.from_dataframe(df)
     neighbor_matrix, neighbor_idx = gdf_neighbors.full()
 
-    G = nx.from_numpy_array(neighbor_matrix, nodelist=data["unique_precinct"].values)
+    G = nx.from_numpy_array(neighbor_matrix, nodelist=df["unique_precinct"].values)
     attributes_dict = {
         row["unique_precinct"]: row.to_dict()
-        for index, row in data[
+        for index, row in df[
             ["CityTownName", "unique_precinct", "POP20", "SLDLST"]
         ].iterrows()
     }

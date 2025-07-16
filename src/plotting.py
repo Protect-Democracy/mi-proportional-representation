@@ -3,18 +3,11 @@ import numpy as np
 import pandas as pd
 from matplotlib.cm import get_cmap
 from scipy.stats import norm
-from scipy.stats import gaussian_kde, norm
+from scipy.stats import gaussian_kde
 
 from data_loading import (
     load_data,
-    load_and_format_precincts_shapefile,
-    load_and_format_votes,
-    load_legislature,
-    load_tiger_blocks,
-    merge_shapefiles_and_votes,
-    reallocate_detroit_counting_board_votes,
 )
-from src.utils import dissolve_small_into_large
 from redistricting import (
     two_component_gaussian,
     four_component_gaussian,
