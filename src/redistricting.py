@@ -12,7 +12,7 @@ from gerrychain.tree import bipartition_tree
 from gerrychain.updaters import Tally, cut_edges
 from scipy.optimize import minimize
 from scipy.stats import norm
-from tqdm import tqdm
+from tqdm import tqdm, trange
 
 from constants import (
     RECOM_EPSILON,
@@ -23,6 +23,87 @@ from data_loading import (
 )
 
 random.seed(101)
+
+
+def agglomerate_districts(
+    G,
+    district_key="district",
+    min_merge_size=3,
+    max_merge_size=9,
+):
+    """
+    Agglomerates smaller districts in a graph into larger ones.
+
+    This function identifies adjacent districts and merges them into new, larger
+    "super-districts." The process is randomized to create a natural-feeling
+    mix of sizes.
+
+    Args:
+        G (nx.Graph): The input graph with a node attribute for districts.
+        district_key (str): The name of the node attribute holding the district ID.
+        min_merge_size (int): The minimum number of old districts in a new one.
+        max_merge_size (int): The maximum number of old districts in a new one.
+
+    Returns:
+        tuple: A tuple containing:
+            - G (nx.Graph): The modified graph with updated district attributes.
+            - new_district_mapping (dict): A mapping from old district IDs to
+                                           their new super-district ID.
+    """
+    new_G = G.copy()
+    # Step 1: Find all unique districts and determine their adjacencies.
+    all_districts = list(set(nx.get_node_attributes(new_G, district_key).values()))
+
+    district_adjacency = {dist: set() for dist in all_districts}
+    for u, v in new_G.edges():
+        dist_u = new_G.nodes[u][district_key]
+        dist_v = new_G.nodes[v][district_key]
+        if dist_u != dist_v:
+            district_adjacency[dist_u].add(dist_v)
+            district_adjacency[dist_v].add(dist_u)
+
+    # Step 2: Iteratively merge districts.
+    shuffled_districts = list(all_districts)
+    random.shuffle(shuffled_districts)
+
+    unmerged_districts = set(all_districts)
+    new_district_mapping = {}
+    new_district_id_counter = 0
+
+    for seed_district in shuffled_districts:
+        if seed_district not in unmerged_districts:
+            continue
+
+        target_size = random.randint(min_merge_size, max_merge_size)
+        districts_to_merge = [seed_district]
+
+        available_neighbors = list(
+            district_adjacency[seed_district] & unmerged_districts
+        )
+        random.shuffle(available_neighbors)
+
+        num_neighbors_to_take = target_size - 1
+        neighbors_to_add = available_neighbors[:num_neighbors_to_take]
+        districts_to_merge.extend(neighbors_to_add)
+
+        new_id = f"super_district_{new_district_id_counter}"
+        for old_district in districts_to_merge:
+            new_district_mapping[old_district] = new_id
+            unmerged_districts.remove(old_district)
+
+        new_district_id_counter += 1
+
+    # Step 3: Apply the new district assignments back to the original graph nodes.
+    final_node_attributes = {
+        node: new_district_mapping[data[district_key]]
+        for node, data in new_G.nodes(data=True)
+        if data[district_key] in new_district_mapping
+    }
+
+    nx.set_node_attributes(new_G, final_node_attributes, name=district_key)
+
+    # Return both the graph and the mapping of old to new districts.
+    return new_G, new_district_mapping
 
 
 def draw_new_districts(G, n_parts=None, existing_seat_column_name=None, n_steps=1000):
@@ -45,7 +126,6 @@ def draw_new_districts(G, n_parts=None, existing_seat_column_name=None, n_steps=
         initial_partition = Partition(
             graph,
             existing_seat_column_name,
-            n_parts=n_parts,
             updaters={
                 "population": Tally("POP20", alias="population"),
                 "cut_edges": cut_edges,
@@ -318,8 +398,41 @@ def ol5_scenario(districts, res, result4):
     return seats
 
 
-def ol9_scenario():
-    return
+def ol9_scenario(districts, res, result4, district_magnitudes):
+    """Open list with variable district sizes."""
+    simulated_votes = np.vstack(
+        [districts["2partyshare"], 1.0 - districts["2partyshare"]]
+    ).reshape(-1, 2)
+
+    if scenario_dictionary["n_parties"] == 2:
+        seats = {
+            "D": 0,
+            "R": 0,
+        }
+
+        initial_seats = {
+            "D": 0,
+            "R": 0,
+        }
+
+    else:
+        seats = {"P": 0, "D": 0, "R": 0, "M": 0}
+        initial_seats = {"P": 0, "D": 0, "R": 0, "M": 0}
+
+    for i in range(len(simulated_votes)):
+        print(simulated_votes[i].reshape(1, -1))
+        print(initial_seats)
+        print(district_magnitudes[i])
+        district_seats, votes = allocate_seats(
+            simulated_votes[i].reshape(1, -1),
+            initial_seats=initial_seats,
+            district_magnitude=district_magnitudes[i],
+            res=res,
+            result4=result4,
+        )
+        for party in seats.keys():
+            seats[party] += district_seats[party]
+    return seats
 
 
 def legislature_given_map(
@@ -328,6 +441,7 @@ def legislature_given_map(
     scenario_dictionary,
     res,
     result4,
+    district_magnitudes=None,
     verbose=False,
 ):
     """
@@ -336,9 +450,13 @@ def legislature_given_map(
     """
     # Figure out the partisanship of each district
     districts = df.copy()
-    districts["district"] = [
-        assignment[unique_precinct] for unique_precinct in districts["unique_precinct"]
-    ]
+    if type(assignment) == list:
+        districts["district"] = assignment
+    else:
+        districts["district"] = [
+            assignment[unique_precinct]
+            for unique_precinct in districts["unique_precinct"]
+        ]
     grouped_districts = districts.groupby("district")[
         ["KAMALA D. HARRIS", "DONALD J. TRUMP", "STATE_REP_GOP", "STATE_REP_DEM"]
     ].sum()
@@ -361,6 +479,9 @@ def legislature_given_map(
 
     if scenario_dictionary["scenario_name"] == "OL5":
         seats = ol5_scenario(grouped_districts, res, result4)
+
+    if scenario_dictionary["scenario_name"] == "OL9":
+        seats = ol9_scenario(grouped_districts, res, result4, district_magnitudes)
 
     return seats
 
@@ -448,6 +569,104 @@ def fit_shor_mccarty():
     return result2, result4
 
 
+def collapse_graph_by_label(G, labeler):
+    # Create a new graph
+    new_G = nx.Graph()
+    # Create a dictionary to map labels to nodes
+
+    # Iterate over the nodes in the original graph
+    for node in G.nodes():
+        # Get the label for the current node
+        label = G.nodes[node][labeler]
+
+        # If this label hasn't been seen before, add a new node to the new graph
+        if label not in new_G.nodes:
+            new_G.add_node(label)
+
+        # Add edges to the new graph based on the edges in the original graph
+        for neighbor in G.neighbors(node):
+            neighbor_label = G.nodes[neighbor][labeler]
+            if neighbor_label != label:
+                # If the neighbor has a different label, create an edge in the new graph
+                new_G.add_edge(label, neighbor_label)
+
+    return new_G
+
+
+# Ok, now that we have a collapsed graph,
+# we need to successively merge districts
+def merge_two_nodes(G, node1, node2):
+    new_G = G.copy()
+    node1_neighbors = list(new_G.neighbors(node1))
+    node2_neighbors = list(new_G.neighbors(node2))
+    contains = nx.get_node_attributes(new_G, "contains")
+
+    # delete nodes 1, 2, and make a new one
+    new_node = str(node1) + "-" + str(node2)
+    new_G.add_node(new_node)
+    for neighbor in list(set(node1_neighbors + node2_neighbors)):
+        new_G.add_edge(new_node, neighbor)
+        nx.set_node_attributes(
+            new_G, {new_node: contains[node1] + contains[node2]}, name="contains"
+        )
+    new_G.remove_node(node1)
+    new_G.remove_node(node2)
+
+    return new_G
+
+
+def label_variable_district(G, data, n_parts=100, min_size=3):
+    try:
+        G_100 = draw_new_districts(G, n_parts=n_parts, n_steps=0)[0]
+    except:
+        return None, None
+
+    G2 = G.copy()
+    nx.set_node_attributes(
+        G2,
+        {
+            unique_precinct: str(G_100[unique_precinct])
+            for unique_precinct in data["unique_precinct"]
+        },
+        name="initial_district",
+    )
+    collapsed_G = collapse_graph_by_label(G2, "initial_district")
+    nx.set_node_attributes(
+        collapsed_G, {n: [n] for n in collapsed_G.nodes}, name="contains"
+    )
+    contents_lengths = {
+        k: len(c) for k, c in nx.get_node_attributes(collapsed_G, "contains").items()
+    }
+    while np.any(np.array(list(contents_lengths.values())) < min_size):
+        # identify target nodes
+        len_1_nodes = np.array(list(contents_lengths.keys()))[
+            np.array(list(contents_lengths.values())) < min_size
+        ]
+        node1 = np.random.choice(len_1_nodes)
+        node2 = np.random.choice(list(nx.neighbors(collapsed_G, node1)))
+        collapsed_G = merge_two_nodes(collapsed_G, node1, node2)
+        contents_lengths = {
+            k: len(c)
+            for k, c in nx.get_node_attributes(collapsed_G, "contains").items()
+        }
+
+    initial_district_to_large_district_dict = {
+        v: k
+        for k, vs in nx.get_node_attributes(collapsed_G, "contains").items()
+        for v in vs
+    }
+
+    district_magnitudes = list(contents_lengths.values())
+    assignment = []
+
+    initial_districts = nx.get_node_attributes(G2, "initial_district")
+    for i in range(len(data)):
+        initial_district = initial_districts[data["unique_precinct"].iloc[i]]
+        assignment.append(initial_district_to_large_district_dict[initial_district])
+
+    return assignment, district_magnitudes
+
+
 if __name__ == "__main__":
     # Load voting results
     data, house2024, senate2024, house_subset, senate_subset = load_data()
@@ -464,39 +683,46 @@ if __name__ == "__main__":
     # Loop through different electoral scenarios
     legislatures = {}
     district_seats = 100
-    n_maps = 10
+    n_maps = 100
+    district_mags = None
     # Big for loop to go through all scenarios
-    for scenario in ["MMP", "OL5"]:
+    for scenario in ["OL9", "OL5", "MMP"]:
         legislatures[scenario] = {}
-
         if scenario == "MMP":
             district_magnitude = 1
         elif scenario == "OL5":
             district_magnitude = 5
-        try:
-            assignment_list_house = draw_new_districts(
-                G,
-                n_parts=int(district_seats / district_magnitude),
-                n_steps=n_maps,
-            )
-            if scenario == "OL5":
-                district_seats = 35
-                assignment_list_senate = draw_new_districts(
+        if scenario != "OL9":
+            try:
+                assignment_list_house = draw_new_districts(
                     G,
                     n_parts=int(district_seats / district_magnitude),
                     n_steps=n_maps,
                 )
-
-        except RuntimeError:
-            # sometimes the map-drawing algorithm gets stuck.
-            # It's okay to ignore this and just keep going
-            pass
-
+                if scenario == "OL5":
+                    district_seats = 35
+                    assignment_list_senate = draw_new_districts(
+                        G,
+                        n_parts=int(district_seats / district_magnitude),
+                        n_steps=n_maps,
+                    )
+            except RuntimeError:
+                # sometimes the map-drawing algorithm gets stuck.
+                # It's okay to ignore this and just keep going
+                pass
+        else:
+            assignment_list_house = []
+            district_mags = []
+            for i in trange(n_maps):
+                ah, dm = label_variable_district(G, data=data)
+                if ah is not None:
+                    assignment_list_house.append(ah)
+                    district_mags.append(dm)
         for partisan_trend in ["no_change", "more_gop", "more_dem"]:
             legislatures[scenario][partisan_trend] = {}
             for n_parties in [2, 4]:
                 legislatures[scenario][partisan_trend][n_parties] = []
-                for assignment in tqdm(assignment_list_house):
+                for i, assignment in enumerate(assignment_list_house):
                     scenario_dictionary = {
                         "scenario_name": scenario,
                         "n_parties": n_parties,
@@ -508,6 +734,7 @@ if __name__ == "__main__":
                         scenario_dictionary=scenario_dictionary,
                         res=res,
                         result4=result4,
+                        district_magnitudes=district_mags[i],
                     )
                     legislatures[scenario][partisan_trend][n_parties].append(
                         assigned_seats
@@ -526,7 +753,6 @@ if __name__ == "__main__":
                             res=res,
                             result4=result4,
                         )
-
                         for party in assigned_seats.keys():
                             legislatures[scenario][partisan_trend][n_parties][i][
                                 party
