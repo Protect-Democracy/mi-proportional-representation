@@ -5,10 +5,10 @@ from matplotlib.cm import get_cmap
 from scipy.stats import norm
 from scipy.stats import gaussian_kde
 
-from data_loading import (
+from src.data_loading import (
     load_data,
 )
-from redistricting import (
+from src.redistricting import (
     two_component_gaussian,
     four_component_gaussian,
     fit_crossover,

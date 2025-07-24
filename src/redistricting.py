@@ -2,6 +2,7 @@ import random
 from functools import partial
 
 import libpysal as lp
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -12,13 +13,13 @@ from gerrychain.tree import bipartition_tree
 from gerrychain.updaters import Tally, cut_edges
 from scipy.optimize import minimize
 from scipy.stats import norm
-from tqdm import tqdm, trange
+from tqdm import trange
 
-from constants import (
+from src.constants import (
     RECOM_EPSILON,
     RECOM_REGION_SURCHARGE,
 )
-from data_loading import (
+from src.data_loading import (
     load_data,
 )
 
@@ -164,7 +165,6 @@ def draw_new_districts(G, n_parts=None, existing_seat_column_name=None, n_steps=
     assignment_list = []
 
     for i, item in enumerate(recom_chain):
-        print(f"Finished step {i + 1}/{len(recom_chain)}", end="\r")
         assignment_list.append(item.assignment)
 
     return assignment_list
@@ -206,7 +206,7 @@ def graph_from_df(df):
     Turn a GeoDataFrame into a NetworkX graph via its adjacency matrix
     """
 
-    gdf_neighbors = lp.weights.Queen.from_dataframe(df)
+    gdf_neighbors = lp.weights.Queen.from_dataframe(df, use_index=False)
     neighbor_matrix, neighbor_idx = gdf_neighbors.full()
 
     G = nx.from_numpy_array(neighbor_matrix, nodelist=df["unique_precinct"].values)
@@ -420,9 +420,6 @@ def ol9_scenario(districts, res, result4, district_magnitudes):
         initial_seats = {"P": 0, "D": 0, "R": 0, "M": 0}
 
     for i in range(len(simulated_votes)):
-        print(simulated_votes[i].reshape(1, -1))
-        print(initial_seats)
-        print(district_magnitudes[i])
         district_seats, votes = allocate_seats(
             simulated_votes[i].reshape(1, -1),
             initial_seats=initial_seats,
@@ -450,7 +447,7 @@ def legislature_given_map(
     """
     # Figure out the partisanship of each district
     districts = df.copy()
-    if type(assignment) == list:
+    if isinstance(assignment, list):
         districts["district"] = assignment
     else:
         districts["district"] = [
@@ -712,12 +709,17 @@ if __name__ == "__main__":
                 pass
         else:
             assignment_list_house = []
-            district_mags = []
+            assignment_list_senate = []
+            district_mags_house = []
+            district_mags_senate = []
             for i in trange(n_maps):
-                ah, dm = label_variable_district(G, data=data)
-                if ah is not None:
-                    assignment_list_house.append(ah)
-                    district_mags.append(dm)
+                a_house, dmh = label_variable_district(G, data=data)
+                a_senate, dms = label_variable_district(G, data=data, n_parts=38)
+                if a_house is not None and a_senate is not None:
+                    assignment_list_house.append(a_house)
+                    district_mags_house.append(dmh)
+                    assignment_list_senate.append(a_senate)
+                    district_mags_senate.append(dms)
         for partisan_trend in ["no_change", "more_gop", "more_dem"]:
             legislatures[scenario][partisan_trend] = {}
             for n_parties in [2, 4]:
@@ -734,13 +736,13 @@ if __name__ == "__main__":
                         scenario_dictionary=scenario_dictionary,
                         res=res,
                         result4=result4,
-                        district_magnitudes=district_mags[i],
+                        district_magnitudes=district_mags_house[i],
                     )
                     legislatures[scenario][partisan_trend][n_parties].append(
                         assigned_seats
                     )
-                if scenario == "OL5":
-                    for i, assignment in tqdm(enumerate(assignment_list_senate)):
+                if scenario == "OL5" or scenario == "OL9":
+                    for i, assignment in enumerate(assignment_list_senate):
                         scenario_dictionary = {
                             "scenario_name": scenario,
                             "n_parties": n_parties,
@@ -752,8 +754,45 @@ if __name__ == "__main__":
                             scenario_dictionary=scenario_dictionary,
                             res=res,
                             result4=result4,
+                            district_magnitudes=district_mags_senate[i],
                         )
                         for party in assigned_seats.keys():
                             legislatures[scenario][partisan_trend][n_parties][i][
                                 party
                             ] += assigned_seats_senate[party]
+
+legislatures[list(legislatures.keys())[0]].keys()
+
+
+def summary_plots(legislature_dict, filename=None):
+    """Under construction"""
+    alpha = 0.7
+    bins = range(0, 100)
+    for scenario in legislature_dict.keys():
+        for n_parties in [2, 4]:
+            for partisan_trend in legislatures[list(legislatures.keys())[0]].keys():
+                leg_df = pd.DataFrame(
+                    legislature_dict[scenario][partisan_trend][n_parties]
+                )
+                plt.hist(leg_df["D"], bins=bins, label="Democrat", alpha=alpha)
+                plt.hist(leg_df["R"], bins=bins, label="Republican", alpha=alpha)
+                if n_parties > 2:
+                    plt.hist(leg_df["M"], bins=bins, label="MAGA", alpha=alpha)
+                    plt.hist(leg_df["P"], bins=bins, label="Progressive", alpha=alpha)
+                plt.ylabel("Count")
+                plt.xlabel("Seats")
+                plt.title(
+                    "Scenario: "
+                    + scenario
+                    + ", "
+                    + str(n_parties)
+                    + " Parties"
+                    + ", "
+                    + partisan_trend
+                )
+                plt.legend()
+                plt.savefig(f"plots/{scenario}_{str(n_parties)}_{partisan_trend}.pdf")
+                plt.show()
+
+
+summary_plots(legislatures)

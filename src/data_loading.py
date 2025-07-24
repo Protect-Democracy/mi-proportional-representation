@@ -5,7 +5,7 @@ import requests
 import zipfile
 import os
 
-from utils import dissolve_small_into_large, label_small_with_large
+from src.utils import dissolve_small_into_large, label_small_with_large
 
 
 def load_and_format_votes():
@@ -485,12 +485,12 @@ def deal_with_ann_arbor(df: gp.GeoDataFrame, candidate_cols: list, house2024):
     # Let's pretend that the new precincts are "wards". And assign them to the
     # right state legislative district
     aa_1.loc[:, "WARD"] = "1"
-    aa_1.loc[:, "WardNumber"] = "1"
+    aa_1.loc[:, "WardNumber"] = 1
     aa_1.loc[:, "SLDLST"] = "023"
     aa_1.loc[:, "SLDUST"] = "015"
 
     aa_2.loc[:, "WARD"] = "2"
-    aa_2.loc[:, "WardNumber"] = "2"
+    aa_2.loc[:, "WardNumber"] = 2
     aa_2.loc[:, "SLDLST"] = "048"
     aa_2.loc[:, "SLDUST"] = "014"
 
