@@ -5,7 +5,7 @@ import requests
 import zipfile
 import os
 
-from src.utils import dissolve_small_into_large, label_small_with_large
+from utils import dissolve_small_into_large, label_small_with_large
 
 
 def load_and_format_votes():

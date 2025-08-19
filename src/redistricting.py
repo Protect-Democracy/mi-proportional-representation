@@ -1,3 +1,4 @@
+import pickle
 import random
 from functools import partial
 
@@ -11,19 +12,22 @@ from gerrychain.constraints import contiguous
 from gerrychain.proposals import recom
 from gerrychain.tree import bipartition_tree
 from gerrychain.updaters import Tally, cut_edges
+from joblib import Memory
 from scipy.optimize import minimize
 from scipy.stats import norm
 from tqdm import trange
 
-from src.constants import (
+from constants import (
     RECOM_EPSILON,
     RECOM_REGION_SURCHARGE,
 )
-from src.data_loading import (
+from data_loading import (
     load_data,
 )
 
 random.seed(101)
+cache_location = "./my_joblib_cache"
+memory = Memory(cache_location, verbose=0)  # verbose=1 shows cache hits/misses
 
 
 def agglomerate_districts(
@@ -107,6 +111,7 @@ def agglomerate_districts(
     return new_G, new_district_mapping
 
 
+@memory.cache
 def draw_new_districts(G, n_parts=None, existing_seat_column_name=None, n_steps=1000):
     """Use GerryChain to step through a Monte Carlo sequence of different maps."""
 
@@ -612,11 +617,8 @@ def merge_two_nodes(G, node1, node2):
     return new_G
 
 
-def label_variable_district(G, data, n_parts=100, min_size=3):
-    try:
-        G_100 = draw_new_districts(G, n_parts=n_parts, n_steps=0)[0]
-    except:
-        return None, None
+def label_variable_district(G, G_100, data, n_parts=100, min_size=3):
+    """Combine a bunch of 1-member districts into districts of variable size."""
 
     G2 = G.copy()
     nx.set_node_attributes(
@@ -664,6 +666,88 @@ def label_variable_district(G, data, n_parts=100, min_size=3):
     return assignment, district_magnitudes
 
 
+@memory.cache
+def get_district_maps(G, scenario, n_maps, single_member_districts=None):
+    """A wrapper function for getting district maps.
+
+    We want to create a large number of maps. Let's do it in a
+    coherent way so we can cache/save the maps and not waste compute
+    drawing new maps.
+    """
+    district_mags_house = []
+    district_mags_senate = []
+
+    if scenario == "MMP":
+        district_magnitude = 1
+    elif scenario == "OL5":
+        district_magnitude = 5
+    if scenario != "OL9":
+        try:
+            print("drawing new house assignments...")
+
+            # Start with "House" seats
+            district_seats = 100
+            assignment_list_house = draw_new_districts(
+                G,
+                n_parts=int(district_seats / district_magnitude),
+                n_steps=n_maps,
+            )
+
+            if scenario == "OL5":
+                # the OL5 scenario also has a Senate
+                district_seats = 35
+                print("drawing new senate seats...")
+                assignment_list_senate = draw_new_districts(
+                    G,
+                    n_parts=int(district_seats / district_magnitude),
+                    n_steps=n_maps,
+                )
+                district_mags_house = [5] * n_maps
+                district_mags_senate = [5] * n_maps
+        except RuntimeError:
+            # sometimes the map-drawing algorithm gets stuck.
+            # It's okay to ignore this and just keep going
+            pass
+    else:
+        if single_member_districts is None:
+            single_member_districts = []
+            print("Calling OL9 without cached 1-member districts; this may be slow.")
+            for i in trange(n_maps):
+                single_member_districts[i] = draw_new_districts(
+                    G, n_parts=100, n_steps=0
+                )[0]
+
+        assignment_list_house = []
+        assignment_list_senate = []
+        for i in trange(n_maps):
+            # get 1-member districts from cached MMP scenario
+            G_100 = single_member_districts[i]
+            G_38 = draw_new_districts(G, n_parts=38, n_steps=0)[0]
+            a_house, dmh = label_variable_district(G, G_100, data=data)
+            a_senate, dms = label_variable_district(G, G_38, data=data, n_parts=38)
+            if a_house is not None and a_senate is not None:
+                assignment_list_house.append(a_house)
+                district_mags_house.append(dmh)
+                assignment_list_senate.append(a_senate)
+                district_mags_senate.append(dms)
+
+    # Compile maps into a single object
+    results = {
+        "House": {
+            "assignment": assignment_list_house,
+            "district_magnitudes": district_mags_house,
+        }
+    }
+    if scenario == "MMP":
+        results["Senate"] = None
+    else:
+        results["Senate"] = {
+            "assignment": assignment_list_senate,
+            "district_magnitudes": district_mags_senate,
+        }
+    return results
+
+
 if __name__ == "__main__":
     # Load voting results
     data, house2024, senate2024, house_subset, senate_subset = load_data()
@@ -678,71 +762,56 @@ if __name__ == "__main__":
     result2, result4 = fit_shor_mccarty()
 
     # Loop through different electoral scenarios
+    single_member_districts = None
     legislatures = {}
-    district_seats = 100
-    n_maps = 100
+    n_maps = 1000
     district_mags = None
     # Big for loop to go through all scenarios
-    for scenario in ["OL9", "OL5", "MMP"]:
+    for scenario in ["MMP", "OL9", "OL5"]:  # ensure MMP comes before OL9 for caching
         legislatures[scenario] = {}
+        the_maps = get_district_maps(
+            G, scenario, n_maps=n_maps, single_member_districts=single_member_districts
+        )
+        # save for later
         if scenario == "MMP":
-            district_magnitude = 1
-        elif scenario == "OL5":
-            district_magnitude = 5
-        if scenario != "OL9":
-            try:
-                assignment_list_house = draw_new_districts(
-                    G,
-                    n_parts=int(district_seats / district_magnitude),
-                    n_steps=n_maps,
-                )
-                if scenario == "OL5":
-                    district_seats = 35
-                    assignment_list_senate = draw_new_districts(
-                        G,
-                        n_parts=int(district_seats / district_magnitude),
-                        n_steps=n_maps,
-                    )
-            except RuntimeError:
-                # sometimes the map-drawing algorithm gets stuck.
-                # It's okay to ignore this and just keep going
-                pass
-        else:
-            assignment_list_house = []
-            assignment_list_senate = []
-            district_mags_house = []
-            district_mags_senate = []
-            for i in trange(n_maps):
-                a_house, dmh = label_variable_district(G, data=data)
-                a_senate, dms = label_variable_district(G, data=data, n_parts=38)
-                if a_house is not None and a_senate is not None:
-                    assignment_list_house.append(a_house)
-                    district_mags_house.append(dmh)
-                    assignment_list_senate.append(a_senate)
-                    district_mags_senate.append(dms)
+            single_member_districts = the_maps["House"]["assignment"]
         for partisan_trend in ["no_change", "more_gop", "more_dem"]:
+            print("partisan trend:", partisan_trend)
             legislatures[scenario][partisan_trend] = {}
             for n_parties in [2, 4]:
+                print("n parties:", n_parties)
                 legislatures[scenario][partisan_trend][n_parties] = []
-                for i, assignment in enumerate(assignment_list_house):
+                for i, assignment in enumerate(the_maps["House"]["assignment"]):
                     scenario_dictionary = {
                         "scenario_name": scenario,
                         "n_parties": n_parties,
                         "partisan_trend": partisan_trend,
                     }
-                    assigned_seats = legislature_given_map(
-                        assignment,
-                        data,
-                        scenario_dictionary=scenario_dictionary,
-                        res=res,
-                        result4=result4,
-                        district_magnitudes=district_mags_house[i],
-                    )
+                    if scenario != "OL9":
+                        assigned_seats = legislature_given_map(
+                            assignment,
+                            data,
+                            scenario_dictionary=scenario_dictionary,
+                            res=res,
+                            result4=result4,
+                            district_magnitudes=None,
+                        )
+                    else:
+                        assigned_seats = legislature_given_map(
+                            assignment,
+                            data,
+                            scenario_dictionary=scenario_dictionary,
+                            res=res,
+                            result4=result4,
+                            district_magnitudes=the_maps["House"][
+                                "district_magnitudes"
+                            ][i],
+                        )
                     legislatures[scenario][partisan_trend][n_parties].append(
                         assigned_seats
                     )
                 if scenario == "OL5" or scenario == "OL9":
-                    for i, assignment in enumerate(assignment_list_senate):
+                    for i, assignment in enumerate(the_maps["Senate"]["assignment"]):
                         scenario_dictionary = {
                             "scenario_name": scenario,
                             "n_parties": n_parties,
@@ -754,14 +823,17 @@ if __name__ == "__main__":
                             scenario_dictionary=scenario_dictionary,
                             res=res,
                             result4=result4,
-                            district_magnitudes=district_mags_senate[i],
+                            district_magnitudes=the_maps["Senate"][
+                                "district_magnitudes"
+                            ][i],
                         )
                         for party in assigned_seats.keys():
                             legislatures[scenario][partisan_trend][n_parties][i][
                                 party
                             ] += assigned_seats_senate[party]
 
-legislatures[list(legislatures.keys())[0]].keys()
+with open("saved_legislatures.pkl", "wb") as f:
+    pickle.dump(legislatures, f)
 
 
 def summary_plots(legislature_dict, filename=None):
@@ -795,4 +867,5 @@ def summary_plots(legislature_dict, filename=None):
                 plt.show()
 
 
+print("drawing plots...")
 summary_plots(legislatures)
