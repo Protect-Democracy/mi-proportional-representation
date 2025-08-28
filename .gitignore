@@ -11,6 +11,9 @@ Thumbs.db
 log/
 *.log
 
+# Clint's figure stuff
+*.psd
+
 __pycache__
 # Suggested to add gitignores from Github that are relevant to the
 # language(s) of your project.
