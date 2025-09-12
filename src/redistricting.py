@@ -1,9 +1,14 @@
+"""
+This module contains the core logic for the redistricting simulation.
+"""
+
+import itertools
 import pickle
 import random
 from functools import partial
+from typing import Any, Dict, List, Tuple
 
 import libpysal as lp
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -13,7 +18,6 @@ from gerrychain.proposals import recom
 from gerrychain.tree import bipartition_tree
 from gerrychain.updaters import Tally, cut_edges
 from joblib import Memory
-from scipy.optimize import minimize
 from scipy.stats import norm
 from tqdm import trange
 
@@ -21,167 +25,61 @@ from constants import (
     RECOM_EPSILON,
     RECOM_REGION_SURCHARGE,
 )
-from data_loading import (
-    load_data,
-)
+from data_loading import load_data
+from utils import fit_statistical_models, modify_2party_share
 
+# --- Constants and Configuration ---
+
+# Seed for reproducibility
 random.seed(101)
-cache_location = "./my_joblib_cache"
-memory = Memory(cache_location, verbose=0)  # verbose=1 shows cache hits/misses
+np.random.seed(101)
+
+# Caching configuration
+CACHE_LOCATION = "./.joblib_cache"
+memory = Memory(CACHE_LOCATION, verbose=0)
+
+# Simulation parameters
+N_MAPS = 1000
+HOUSE_SEATS_TOTAL = 100
+SENATE_SEATS_TOTAL = 38
+MMP_TOTAL_SEATS = 138
+MMP_PROPORTIONAL_SEATS = 38
+OL5_HOUSE_DISTRICTS = 20
+OL5_SENATE_DISTRICTS = 7
+OL5_DISTRICT_MAGNITUDE = 5
 
 
-def agglomerate_districts(
-    G,
-    district_key="district",
-    min_merge_size=3,
-    max_merge_size=9,
-):
+# --- Core Graph and Data Functions ---
+
+
+def load_and_prepare_graph_() -> Tuple[nx.Graph, pd.DataFrame]:
     """
-    Agglomerates smaller districts in a graph into larger ones.
-
-    This function identifies adjacent districts and merges them into new, larger
-    "super-districts." The process is randomized to create a natural-feeling
-    mix of sizes.
-
-    Args:
-        G (nx.Graph): The input graph with a node attribute for districts.
-        district_key (str): The name of the node attribute holding the district ID.
-        min_merge_size (int): The minimum number of old districts in a new one.
-        max_merge_size (int): The maximum number of old districts in a new one.
+    Loads precinct data, constructs a NetworkX graph, and connects islands.
+    This function is cached to avoid expensive repeated data loading and graph construction.
 
     Returns:
-        tuple: A tuple containing:
-            - G (nx.Graph): The modified graph with updated district attributes.
-            - new_district_mapping (dict): A mapping from old district IDs to
-                                           their new super-district ID.
+        A tuple containing the connected NetworkX graph and the original DataFrame.
     """
-    new_G = G.copy()
-    # Step 1: Find all unique districts and determine their adjacencies.
-    all_districts = list(set(nx.get_node_attributes(new_G, district_key).values()))
+    print("Loading data and preparing graph...")
+    data, house2024, senate2024, _, _ = load_data()
 
-    district_adjacency = {dist: set() for dist in all_districts}
-    for u, v in new_G.edges():
-        dist_u = new_G.nodes[u][district_key]
-        dist_v = new_G.nodes[v][district_key]
-        if dist_u != dist_v:
-            district_adjacency[dist_u].add(dist_v)
-            district_adjacency[dist_v].add(dist_u)
+    # Create graph from GeoDataFrame adjacency
+    gdf_neighbors = lp.weights.Queen.from_dataframe(data, use_index=False)
+    neighbor_matrix, _ = gdf_neighbors.full()
+    graph = nx.from_numpy_array(
+        neighbor_matrix, nodelist=data["unique_precinct"].values
+    )
 
-    # Step 2: Iteratively merge districts.
-    shuffled_districts = list(all_districts)
-    random.shuffle(shuffled_districts)
-
-    unmerged_districts = set(all_districts)
-    new_district_mapping = {}
-    new_district_id_counter = 0
-
-    for seed_district in shuffled_districts:
-        if seed_district not in unmerged_districts:
-            continue
-
-        target_size = random.randint(min_merge_size, max_merge_size)
-        districts_to_merge = [seed_district]
-
-        available_neighbors = list(
-            district_adjacency[seed_district] & unmerged_districts
-        )
-        random.shuffle(available_neighbors)
-
-        num_neighbors_to_take = target_size - 1
-        neighbors_to_add = available_neighbors[:num_neighbors_to_take]
-        districts_to_merge.extend(neighbors_to_add)
-
-        new_id = f"super_district_{new_district_id_counter}"
-        for old_district in districts_to_merge:
-            new_district_mapping[old_district] = new_id
-            unmerged_districts.remove(old_district)
-
-        new_district_id_counter += 1
-
-    # Step 3: Apply the new district assignments back to the original graph nodes.
-    final_node_attributes = {
-        node: new_district_mapping[data[district_key]]
-        for node, data in new_G.nodes(data=True)
-        if data[district_key] in new_district_mapping
+    # Add node attributes
+    attributes_dict = {
+        row["unique_precinct"]: row.to_dict()
+        for _, row in data[
+            ["CityTownName", "unique_precinct", "POP20", "SLDLST"]
+        ].iterrows()
     }
+    nx.set_node_attributes(graph, attributes_dict)
 
-    nx.set_node_attributes(new_G, final_node_attributes, name=district_key)
-
-    # Return both the graph and the mapping of old to new districts.
-    return new_G, new_district_mapping
-
-
-@memory.cache
-def draw_new_districts(G, n_parts=None, existing_seat_column_name=None, n_steps=1000):
-    """Use GerryChain to step through a Monte Carlo sequence of different maps."""
-
-    graph = Graph.from_networkx(G)
-    if n_parts is not None:
-        initial_partition = Partition.from_random_assignment(
-            graph,
-            epsilon=RECOM_EPSILON,
-            pop_col="POP20",
-            n_parts=n_parts,
-            updaters={
-                "population": Tally("POP20", alias="population"),
-                "cut_edges": cut_edges,
-            },
-        )
-
-    elif existing_seat_column_name is not None:
-        initial_partition = Partition(
-            graph,
-            existing_seat_column_name,
-            updaters={
-                "population": Tally("POP20", alias="population"),
-                "cut_edges": cut_edges,
-            },
-        )
-    else:
-        raise Exception(
-            "You must specify either an existing set of districts, or the number of new districts"
-        )
-    ideal_population = sum(initial_partition["population"].values()) / len(
-        initial_partition
-    )
-
-    proposal = partial(
-        recom,
-        pop_col="POP20",
-        pop_target=ideal_population,
-        epsilon=RECOM_EPSILON,
-        node_repeats=100,
-        region_surcharge={"CityTownName": RECOM_REGION_SURCHARGE},
-        method=partial(
-            bipartition_tree,
-            max_attempts=100,
-            allow_pair_reselection=True,  # <-- This is the only change
-        ),
-    )
-
-    recom_chain = MarkovChain(
-        proposal=proposal,
-        constraints=[contiguous],
-        accept=accept.always_accept,
-        initial_state=initial_partition,
-        total_steps=n_steps,
-    )
-
-    assignment_list = []
-
-    for i, item in enumerate(recom_chain):
-        assignment_list.append(item.assignment)
-
-    return assignment_list
-
-
-def connect_graph(G):
-    """
-    Some of the precincts in Michigan are islands; we need a connected
-    graph of precincts for contiguous districts. This function adds some edges
-    by hand that connect islands to the mainland through their most
-    appropriate nearest precincts.
-    """
+    # Manually add edges to connect islands for GerryChain contiguity checks
     edges_to_add = [
         ("82_GROSSE ILE TOWNSHIP_0.0_1", "82_WYANDOTTE CITY_0.0_3"),
         ("82_GROSSE ILE TOWNSHIP_0.0_1", "82_RIVERVIEW CITY_0.0_1"),
@@ -196,676 +94,548 @@ def connect_graph(G):
         ("49_MACKINAC ISLAND CITY_0.0_1", "49_ST IGNACE CITY_0.0_1"),
         ("24_WAWATAM TOWNSHIP_0.0_1", "49_MORAN TOWNSHIP_0.0_1"),
     ]
-    for edge in edges_to_add:
-        G.add_edge(edge[0], edge[1])
+    graph.add_edges_from(edges_to_add)
 
-    if nx.is_connected(G):
-        print("Graph is connected")
-    else:
-        print("Graph is disconnected... something has gone wrong")
-    return G
+    if not nx.is_connected(graph):
+        raise RuntimeError("Graph is not connected after adding manual edges.")
+    print("Graph is connected.")
+    return graph, data, house2024, senate2024
 
 
-def graph_from_df(df):
+# --- Gerrymandering and Map Drawing ---
+
+
+def draw_new_districts_(
+    graph: nx.Graph, num_districts: int, num_steps: int
+) -> List[Dict[Any, int]]:
     """
-    Turn a GeoDataFrame into a NetworkX graph via its adjacency matrix
+    Uses GerryChain to generate a sequence of district maps.
+
+    Args:
+        graph: The NetworkX graph of precincts.
+        num_districts: The number of districts to create.
+        num_steps: The number of steps in the Markov chain (number of maps).
+
+    Returns:
+        A list of assignment dictionaries, where each dictionary maps a node
+        to a district ID.
     """
-
-    gdf_neighbors = lp.weights.Queen.from_dataframe(df, use_index=False)
-    neighbor_matrix, neighbor_idx = gdf_neighbors.full()
-
-    G = nx.from_numpy_array(neighbor_matrix, nodelist=df["unique_precinct"].values)
-    attributes_dict = {
-        row["unique_precinct"]: row.to_dict()
-        for index, row in df[
-            ["CityTownName", "unique_precinct", "POP20", "SLDLST"]
-        ].iterrows()
+    graph_gerry = Graph.from_networkx(graph)
+    pop_col = "POP20"
+    updaters = {
+        "population": Tally(pop_col, alias="population"),
+        "cut_edges": cut_edges,
     }
 
-    # Set the node attributes
-    nx.set_node_attributes(G, attributes_dict)
-    return G
-
-
-def jefferson_method(votes_received, allocated_seats, seats_to_allocate):
-    """The Jefferson/D'Hondt/Greatest Divisors method of allocating seats."""
-
-    while seats_to_allocate > 0:
-        quotient = {}
-        for party in allocated_seats.keys():
-            quotient[party] = votes_received[party] / (allocated_seats[party] + 1)
-        most_deserving_party = sorted(
-            quotient.items(), key=lambda x: x[1], reverse=True
-        )[0][0]
-        allocated_seats[most_deserving_party] += 1
-        seats_to_allocate -= 1
-
-    return allocated_seats
-
-
-def modify_2party_share(value, alpha):
-    """
-    Tweaking the 2-party share to allow for the state trending
-    more red or blue. Alpha should be ~0.1 for a small trend
-    """
-    if alpha > 0:
-        return value - alpha * (value - value**2)
-    if alpha < 0:
-        return value + alpha * (value - value**0.5)
-
-
-def party_popularity(partisanship, result4):
-    x = -1 * (partisanship * 4 - 2)
-    # "progressive party"
-    prog = result4.x[0] * norm(loc=result4.x[1], scale=result4.x[2]).pdf(x)
-    # "democratic party"
-    dem4 = result4.x[3] * norm(loc=result4.x[4], scale=result4.x[5]).pdf(x)
-    # "republican party"
-    gop4 = result4.x[6] * norm(loc=result4.x[7], scale=result4.x[8]).pdf(x)
-    # "maga party"
-    maga = result4.x[9] * norm(loc=result4.x[10], scale=result4.x[11]).pdf(x)
-
-    raw4 = np.vstack([prog, dem4, gop4, maga]).T
-    return raw4 / np.repeat(np.sum(raw4, axis=1).reshape(-1, 1), repeats=4, axis=1)
-
-
-def allocate_seats(votes, initial_seats, district_magnitude, res, result4):
-    """Simulate votes by applying crossover voting. Then put the number of
-    seats earned into a district dictionary."""
-    n_parties = len(initial_seats.keys())
-    seats = initial_seats.copy()
-
-    # Add or subtract votes from the state rep compared to POTUS
-    modification = norm(loc=res.x[0], scale=res.x[1]).rvs()
-    votes[:, 0] = votes[:, 0] + modification
-    votes[:, 1] = votes[:, 1] - modification
-
-    # if it's a 2-party system, no more modifications are needed
-    if n_parties == 4:
-        # In a 4-party system, we need to further break down the votes
-        #
-        popularity4 = party_popularity(votes[:, 0], result4=result4)
-
-        # progressive/dem split
-        prog = votes[:, 0] * popularity4[:, 0] / (popularity4[:, 0] + popularity4[:, 1])
-        dem = votes[:, 0] * popularity4[:, 1] / (popularity4[:, 0] + popularity4[:, 1])
-
-        # republican/maga split
-        gop = votes[:, 1] * popularity4[:, 2] / (popularity4[:, 2] + popularity4[:, 3])
-        maga = votes[:, 1] * popularity4[:, 3] / (popularity4[:, 2] + popularity4[:, 3])
-
-        votes = np.hstack(
-            [
-                prog.reshape(-1, 1),
-                dem.reshape(-1, 1),
-                gop.reshape(-1, 1),
-                maga.reshape(-1, 1),
-            ]
-        )
-
-    # Loop through each district and assign seats proportionally based
-    # on the number of votes received
-    for i in range(votes.shape[0]):
-        district_seats = jefferson_method(
-            {k: votes[i, j] for j, k in enumerate(initial_seats.keys())},
-            allocated_seats={k: 0 for k in initial_seats.keys()},
-            seats_to_allocate=district_magnitude,
-        )
-        for party in initial_seats.keys():
-            seats[party] += district_seats[party]
-
-    return seats, votes
-
-
-def mmp_scenario(districts, res, result4):
-    """
-    This scenario has 100 district-based seats, and 38 statewide proportional
-    seats. The overall representation is mechanically forced to be proportional
-    with some logic around how the 38 are allocated.
-    """
-    # First, allocate district-based seats
-    district_magnitude = 1
-    simulated_votes = np.vstack(
-        [districts["2partyshare"], 1.0 - districts["2partyshare"]]
-    ).reshape(-1, 2)
-
-    if scenario_dictionary["n_parties"] == 2:
-        seats = {
-            "D": 0,
-            "R": 0,
-        }
-
-    else:
-        seats = {"P": 0, "D": 0, "R": 0, "M": 0}
-    seats, votes = allocate_seats(
-        simulated_votes,
-        seats,
-        district_magnitude=district_magnitude,
-        res=res,
-        result4=result4,
-    )
-
-    if sum(seats.values()) > 138:
-        print("over 138")
-    # Now, compute the statewide proportional seats
-
-    # in the MMP scenario, there are 38 additional seats allocated on
-    # a statewide basis. From the requirements:
-
-    # For any viable party that earned fewer seats in districts than its
-    # minimum number of seats, it wins a number of list seats
-    # equal to the difference.
-    minimum_seats = np.floor(139 * np.sum(votes, axis=0) / np.sum(votes))
-
-    for i, party in enumerate(seats.keys()):
-        if seats[party] < minimum_seats[i]:
-            difference = minimum_seats[i] - seats[party]
-            seats[party] += difference
-    # If, after that step, fewer than 38 list seats have been awarded,
-    # determine the remaining seats using the Jefferson Method,
-    # also called the greatest divisors method.
-    seats_to_allocate = 138 - sum(seats.values())
-    seats = jefferson_method(
-        {k: np.sum(votes, axis=0)[i] for i, k in enumerate(seats.keys())},
-        seats,
-        seats_to_allocate=seats_to_allocate,
-    )
-
-    return seats
-
-
-def ol5_scenario(districts, res, result4):
-    """
-    This is the simplest scenario: 20 districts of 5 seats each. No
-    extra logic - just add up the votes for each party in each district
-    """
-    district_magnitude = 5
-    simulated_votes = np.vstack(
-        [districts["2partyshare"], 1.0 - districts["2partyshare"]]
-    ).reshape(-1, 2)
-
-    if scenario_dictionary["n_parties"] == 2:
-        seats = {
-            "D": 0,
-            "R": 0,
-        }
-
-    else:
-        seats = {"P": 0, "D": 0, "R": 0, "M": 0}
-
-    seats, votes = allocate_seats(
-        simulated_votes,
-        seats,
-        district_magnitude=district_magnitude,
-        res=res,
-        result4=result4,
-    )
-    return seats
-
-
-def ol9_scenario(districts, res, result4, district_magnitudes):
-    """Open list with variable district sizes."""
-    simulated_votes = np.vstack(
-        [districts["2partyshare"], 1.0 - districts["2partyshare"]]
-    ).reshape(-1, 2)
-
-    if scenario_dictionary["n_parties"] == 2:
-        seats = {
-            "D": 0,
-            "R": 0,
-        }
-
-        initial_seats = {
-            "D": 0,
-            "R": 0,
-        }
-
-    else:
-        seats = {"P": 0, "D": 0, "R": 0, "M": 0}
-        initial_seats = {"P": 0, "D": 0, "R": 0, "M": 0}
-
-    for i in range(len(simulated_votes)):
-        district_seats, votes = allocate_seats(
-            simulated_votes[i].reshape(1, -1),
-            initial_seats=initial_seats,
-            district_magnitude=district_magnitudes[i],
-            res=res,
-            result4=result4,
-        )
-        for party in seats.keys():
-            seats[party] += district_seats[party]
-    return seats
-
-
-def legislature_given_map(
-    assignment,
-    df,
-    scenario_dictionary,
-    res,
-    result4,
-    district_magnitudes=None,
-    verbose=False,
-):
-    """
-    What is the breakdown of the seats in the legislature,
-    given a particular map and scenario?
-    """
-    # Figure out the partisanship of each district
-    districts = df.copy()
-    if isinstance(assignment, list):
-        districts["district"] = assignment
-    else:
-        districts["district"] = [
-            assignment[unique_precinct]
-            for unique_precinct in districts["unique_precinct"]
-        ]
-    grouped_districts = districts.groupby("district")[
-        ["KAMALA D. HARRIS", "DONALD J. TRUMP", "STATE_REP_GOP", "STATE_REP_DEM"]
-    ].sum()
-    grouped_districts["2partyshare"] = grouped_districts["KAMALA D. HARRIS"] / (
-        grouped_districts["KAMALA D. HARRIS"] + grouped_districts["DONALD J. TRUMP"]
-    )
-    # What does the scenario say about the partisanship trend of Michigan?
-    if scenario_dictionary["partisan_trend"] == "more_gop":
-        grouped_districts["2partyshare"] = modify_2party_share(
-            grouped_districts["2partyshare"], 0.2
-        )
-
-    elif scenario_dictionary["partisan_trend"] == "more_dem":
-        grouped_districts["2partyshare"] = modify_2party_share(
-            grouped_districts["2partyshare"], -0.2
-        )
-
-    if scenario_dictionary["scenario_name"] == "MMP":
-        seats = mmp_scenario(grouped_districts, res, result4)
-
-    if scenario_dictionary["scenario_name"] == "OL5":
-        seats = ol5_scenario(grouped_districts, res, result4)
-
-    if scenario_dictionary["scenario_name"] == "OL9":
-        seats = ol9_scenario(grouped_districts, res, result4, district_magnitudes)
-
-    return seats
-
-
-def two_component_gaussian(params, x):
-    a1, mu1, sigma1, a2, mu2, sigma2 = params
-
-    z = a1 * norm(loc=mu1, scale=sigma1).pdf(x) + a2 * norm(loc=mu2, scale=sigma2).pdf(
-        x
-    )
-    return z
-
-
-def four_component_gaussian(params, x):
-    a1, mu1, sigma1, a2, mu2, sigma2, a3, mu3, sigma3, a4, mu4, sigma4 = params
-
-    z = (
-        a1 * norm(loc=mu1, scale=sigma1).pdf(x)
-        + a2 * norm(loc=mu2, scale=sigma2).pdf(x)
-        + a3 * norm(loc=mu3, scale=sigma3).pdf(x)
-        + a4 * norm(loc=mu4, scale=sigma4).pdf(x)
-    )
-    return z
-
-
-def fit_crossover(data):
-    h = np.histogram(
-        data["KAMALA D. HARRIS"] / (data["KAMALA D. HARRIS"] + data["DONALD J. TRUMP"])
-        - data["STATE_REP_DEM"] / (data["STATE_REP_DEM"] + data["STATE_REP_GOP"]),
-        bins=np.linspace(-0.5, 0.5, 201),
-        density=True,
-    )
-
-    def norm_loss(params, x=h[1][:-1], y=h[0]):
-        return np.mean(((norm.pdf(x, loc=params[0], scale=params[1])) - y) ** 2)
-
-    res = minimize(norm_loss, x0=[0, 0.02], tol=1e-10)
-    return res
-
-
-def fit_shor_mccarty():
-    # if there are >2 major parties, we can't get real estimates from
-    # the election results. We have to make a toy model
-    def two_component_loss(params, x, y):
-        return np.sqrt(np.mean((two_component_gaussian(params, x) - y) ** 2))
-
-    def four_component_loss(params, x, y):
-        return np.sqrt(np.mean((four_component_gaussian(params, x) - y) ** 2))
-
-    leg = pd.read_stata("raw_data/legislator_data/shor_mccarty.dta")
-    h = np.histogram(leg["np_score"], bins=np.linspace(-2, 2, 101), density=True)
-    result2 = minimize(
-        two_component_loss,
-        x0=np.array([0.5, -1.0, 0.5, 0.5, 0.8, 0.5]),  # initial guess
-        args=(h[1][:-1], h[0]),
-        tol=1e-8,
-    )
-    # Here, we explicitly determine some bounds on the parameters in order
-    # to soft-prescribe which parties emerge in a 4-party system. Essentially,
-    # we are assuming a progressive (far-left) and MAGA (far-right) party
-    # will arise, and the traditional Democratic and Republican parties will
-    # be closer to the center. (you can tweak the bounds here if you disagree)
-    result4 = minimize(
-        four_component_loss,
-        x0=np.array(
-            [0.25, -1.5, 0.4, 0.25, -0.8, 0.5, 0.25, 0.5, 0.4, 0.25, 1.0, 0.25]
-        ),  # initial guess
-        args=(h[1][:-1], h[0]),
-        tol=1e-8,
-        bounds=(
-            [0.2, 0.5],
-            [-2, -1.0],
-            [0.1, 1.0],
-            [0.2, 0.5],
-            [-1.0, -0.5],
-            [0.1, 1.0],
-            [0.2, 0.5],
-            [0.5, 1],
-            [0.1, 1.0],
-            [0.2, 0.5],
-            [1, 2],
-            [0.1, 1.0],
-        ),
-    )
-    return result2, result4
-
-
-def collapse_graph_by_label(G, labeler):
-    # Create a new graph
-    new_G = nx.Graph()
-    # Create a dictionary to map labels to nodes
-
-    # Iterate over the nodes in the original graph
-    for node in G.nodes():
-        # Get the label for the current node
-        label = G.nodes[node][labeler]
-
-        # If this label hasn't been seen before, add a new node to the new graph
-        if label not in new_G.nodes:
-            new_G.add_node(label)
-
-        # Add edges to the new graph based on the edges in the original graph
-        for neighbor in G.neighbors(node):
-            neighbor_label = G.nodes[neighbor][labeler]
-            if neighbor_label != label:
-                # If the neighbor has a different label, create an edge in the new graph
-                new_G.add_edge(label, neighbor_label)
-
-    return new_G
-
-
-# Ok, now that we have a collapsed graph,
-# we need to successively merge districts
-def merge_two_nodes(G, node1, node2):
-    new_G = G.copy()
-    node1_neighbors = list(new_G.neighbors(node1))
-    node2_neighbors = list(new_G.neighbors(node2))
-    contains = nx.get_node_attributes(new_G, "contains")
-
-    # delete nodes 1, 2, and make a new one
-    new_node = str(node1) + "-" + str(node2)
-    new_G.add_node(new_node)
-    for neighbor in list(set(node1_neighbors + node2_neighbors)):
-        new_G.add_edge(new_node, neighbor)
-        nx.set_node_attributes(
-            new_G, {new_node: contains[node1] + contains[node2]}, name="contains"
-        )
-    new_G.remove_node(node1)
-    new_G.remove_node(node2)
-
-    return new_G
-
-
-def label_variable_district(G, G_100, data, n_parts=100, min_size=3):
-    """Combine a bunch of 1-member districts into districts of variable size."""
-
-    G2 = G.copy()
-    nx.set_node_attributes(
-        G2,
-        {
-            unique_precinct: str(G_100[unique_precinct])
-            for unique_precinct in data["unique_precinct"]
-        },
-        name="initial_district",
-    )
-    collapsed_G = collapse_graph_by_label(G2, "initial_district")
-    nx.set_node_attributes(
-        collapsed_G, {n: [n] for n in collapsed_G.nodes}, name="contains"
-    )
-    contents_lengths = {
-        k: len(c) for k, c in nx.get_node_attributes(collapsed_G, "contains").items()
-    }
-    while np.any(np.array(list(contents_lengths.values())) < min_size):
-        # identify target nodes
-        len_1_nodes = np.array(list(contents_lengths.keys()))[
-            np.array(list(contents_lengths.values())) < min_size
-        ]
-        node1 = np.random.choice(len_1_nodes)
-        node2 = np.random.choice(list(nx.neighbors(collapsed_G, node1)))
-        collapsed_G = merge_two_nodes(collapsed_G, node1, node2)
-        contents_lengths = {
-            k: len(c)
-            for k, c in nx.get_node_attributes(collapsed_G, "contains").items()
-        }
-
-    initial_district_to_large_district_dict = {
-        v: k
-        for k, vs in nx.get_node_attributes(collapsed_G, "contains").items()
-        for v in vs
-    }
-
-    district_magnitudes = list(contents_lengths.values())
-    assignment = []
-
-    initial_districts = nx.get_node_attributes(G2, "initial_district")
-    for i in range(len(data)):
-        initial_district = initial_districts[data["unique_precinct"].iloc[i]]
-        assignment.append(initial_district_to_large_district_dict[initial_district])
-
-    return assignment, district_magnitudes
-
-
-@memory.cache
-def get_district_maps(G, scenario, n_maps, single_member_districts=None):
-    """A wrapper function for getting district maps.
-
-    We want to create a large number of maps. Let's do it in a
-    coherent way so we can cache/save the maps and not waste compute
-    drawing new maps.
-    """
-    district_mags_house = []
-    district_mags_senate = []
-
-    if scenario == "MMP":
-        district_magnitude = 1
-    elif scenario == "OL5":
-        district_magnitude = 5
-    if scenario != "OL9":
+    assignments = []
+    for _ in trange(num_steps):
         try:
-            print("drawing new house assignments...")
-
-            # Start with "House" seats
-            district_seats = 100
-            assignment_list_house = draw_new_districts(
-                G,
-                n_parts=int(district_seats / district_magnitude),
-                n_steps=n_maps,
+            initial_partition = Partition.from_random_assignment(
+                graph_gerry,
+                n_parts=num_districts,
+                epsilon=RECOM_EPSILON,
+                pop_col=pop_col,
+                updaters=updaters,
             )
 
-            if scenario == "OL5":
-                # the OL5 scenario also has a Senate
-                district_seats = 35
-                print("drawing new senate seats...")
-                assignment_list_senate = draw_new_districts(
-                    G,
-                    n_parts=int(district_seats / district_magnitude),
-                    n_steps=n_maps,
-                )
-                district_mags_house = [5] * n_maps
-                district_mags_senate = [5] * n_maps
-        except RuntimeError:
-            # sometimes the map-drawing algorithm gets stuck.
-            # It's okay to ignore this and just keep going
+            ideal_population = sum(initial_partition["population"].values()) / len(
+                initial_partition
+            )
+
+            proposal = partial(
+                recom,
+                pop_col=pop_col,
+                pop_target=ideal_population,
+                epsilon=RECOM_EPSILON,
+                node_repeats=100,
+                region_surcharge={"CityTownName": RECOM_REGION_SURCHARGE},
+                method=partial(
+                    bipartition_tree, max_attempts=100, allow_pair_reselection=True
+                ),
+            )
+
+            chain = MarkovChain(
+                proposal=proposal,
+                constraints=[contiguous],
+                accept=accept.always_accept,
+                initial_state=initial_partition,
+                total_steps=1,
+            )
+            for i, p in enumerate(chain):
+                if i == 0:
+                    assignments.append(p.assignment)
+        except Exception:
             pass
-    else:
-        if single_member_districts is None:
-            single_member_districts = []
-            print("Calling OL9 without cached 1-member districts; this may be slow.")
-            for i in trange(n_maps):
-                single_member_districts[i] = draw_new_districts(
-                    G, n_parts=100, n_steps=0
-                )[0]
 
-        assignment_list_house = []
-        assignment_list_senate = []
-        for i in trange(n_maps):
-            # get 1-member districts from cached MMP scenario
-            G_100 = single_member_districts[i]
-            G_38 = draw_new_districts(G, n_parts=38, n_steps=0)[0]
-            a_house, dmh = label_variable_district(G, G_100, data=data)
-            a_senate, dms = label_variable_district(G, G_38, data=data, n_parts=38)
-            if a_house is not None and a_senate is not None:
-                assignment_list_house.append(a_house)
-                district_mags_house.append(dmh)
-                assignment_list_senate.append(a_senate)
-                district_mags_senate.append(dms)
+    return assignments
 
-    # Compile maps into a single object
-    results = {
-        "House": {
-            "assignment": assignment_list_house,
-            "district_magnitudes": district_mags_house,
-        }
+
+def collapse_graph_by_label(graph: nx.Graph, label_key: str) -> nx.Graph:
+    """Collapses a graph by a given node attribute."""
+    new_graph = nx.Graph()
+    for node, data in graph.nodes(data=True):
+        label = data[label_key]
+        if label not in new_graph:
+            new_graph.add_node(label)
+        for neighbor in graph.neighbors(node):
+            neighbor_label = graph.nodes[neighbor][label_key]
+            if label != neighbor_label:
+                new_graph.add_edge(label, neighbor_label)
+    return new_graph
+
+
+def merge_two_nodes(graph: nx.Graph, node1: Any, node2: Any) -> nx.Graph:
+    """Merges two nodes in a graph."""
+    new_graph = graph.copy()
+    neighbors = set(new_graph.neighbors(node1)) | set(new_graph.neighbors(node2))
+    neighbors.discard(node1)
+    neighbors.discard(node2)
+
+    new_node_id = f"{node1}-{node2}"
+    contains1 = new_graph.nodes[node1].get("contains", [node1])
+    contains2 = new_graph.nodes[node2].get("contains", [node2])
+
+    new_graph.add_node(new_node_id, contains=contains1 + contains2)
+    for neighbor in neighbors:
+        new_graph.add_edge(new_node_id, neighbor)
+
+    new_graph.remove_nodes_from([node1, node2])
+    return new_graph
+
+
+def create_variable_magnitude_districts_(
+    graph: nx.Graph, data: pd.DataFrame, base_assignment: Dict, min_size: int = 3
+) -> Tuple[List[Any], List[int]]:
+    """Combines single-member districts into larger, variable-sized districts."""
+    graph_with_districts = graph.copy()
+    nx.set_node_attributes(
+        graph_with_districts,
+        {n: str(d) for n, d in base_assignment.items()},
+        "initial_district",
+    )
+
+    collapsed_graph = collapse_graph_by_label(graph_with_districts, "initial_district")
+    nx.set_node_attributes(
+        collapsed_graph, {n: [n] for n in collapsed_graph.nodes}, "contains"
+    )
+
+    while True:
+        contents = nx.get_node_attributes(collapsed_graph, "contains")
+        magnitudes = {k: len(v) for k, v in contents.items()}
+        small_nodes = [n for n, size in magnitudes.items() if size < min_size]
+
+        if not small_nodes:
+            break
+
+        node1 = random.choice(small_nodes)
+        neighbors = list(collapsed_graph.neighbors(node1))
+        if not neighbors:
+            print(f"Warning: Node {node1} has no neighbors to merge with. Skipping.")
+            break
+
+        node2 = random.choice(neighbors)
+        collapsed_graph = merge_two_nodes(collapsed_graph, node1, node2)
+
+    final_contents = nx.get_node_attributes(collapsed_graph, "contains")
+    district_magnitudes = [len(v) for v in final_contents.values()]
+
+    initial_to_large_map = {
+        initial_dist: large_dist
+        for large_dist, initial_list in final_contents.items()
+        for initial_dist in initial_list
     }
-    if scenario == "MMP":
-        results["Senate"] = None
-    else:
+
+    final_assignment = [
+        initial_to_large_map[str(base_assignment[p])] for p in data["unique_precinct"]
+    ]
+
+    return final_assignment, district_magnitudes
+
+
+def _get_maps_for_scenario_(
+    graph: nx.Graph, data: pd.DataFrame, scenario: str, n_maps: int
+) -> Dict[str, Any]:
+    """Helper function to generate district maps for a given scenario."""
+    results: Dict[str, Any] = {"House": {}, "Senate": None}
+
+    if scenario in ["MMP", "OL1"]:
+        assignments = draw_new_districts(
+            graph, num_districts=HOUSE_SEATS_TOTAL, num_steps=n_maps
+        )
+        results["House"] = {
+            "assignment": assignments,
+            "district_magnitudes": n_maps * [[1] * HOUSE_SEATS_TOTAL],
+        }
+        if scenario == "OL1":
+            senate_assignments = draw_new_districts(
+                graph, num_districts=SENATE_SEATS_TOTAL, num_steps=n_maps
+            )
+            results["Senate"] = {
+                "assignment": senate_assignments,
+                "district_magnitudes": n_maps * [[1] * SENATE_SEATS_TOTAL],
+            }
+    elif scenario == "OL5":
+        house_assignments = draw_new_districts(
+            graph, num_districts=OL5_HOUSE_DISTRICTS, num_steps=n_maps
+        )
+        senate_assignments = draw_new_districts(
+            graph, num_districts=OL5_SENATE_DISTRICTS, num_steps=n_maps
+        )
+        results["House"] = {
+            "assignment": house_assignments,
+            "district_magnitudes": n_maps
+            * [[OL5_DISTRICT_MAGNITUDE] * OL5_HOUSE_DISTRICTS],
+        }
         results["Senate"] = {
-            "assignment": assignment_list_senate,
-            "district_magnitudes": district_mags_senate,
+            "assignment": senate_assignments,
+            "district_magnitudes": n_maps
+            * [[OL5_DISTRICT_MAGNITUDE] * OL5_SENATE_DISTRICTS],
+        }
+    elif scenario == "OL9":
+        base_maps = get_district_maps(graph, data, "MMP", n_maps)
+        single_member_house = base_maps["House"]["assignment"]
+        single_member_senate = draw_new_districts(
+            graph, num_districts=SENATE_SEATS_TOTAL, num_steps=n_maps
+        )
+
+        house_assignments, house_mags = [], []
+        senate_assignments, senate_mags = [], []
+
+        for i in trange(n_maps, desc="Aggregating OL9 districts"):
+            try:
+                assignment_h, dist_mag_h = create_variable_magnitude_districts(
+                    graph, data, single_member_house[i]
+                )
+                assignment_s, dist_mag_s = create_variable_magnitude_districts(
+                    graph, data, single_member_senate[i]
+                )
+                unique_precincts = list(single_member_house[i].keys())
+                house_assignments.append(
+                    {
+                        unique_precincts[j]: assignment_h[j]
+                        for j in range(len(unique_precincts))
+                    }
+                )
+                house_mags.append(dist_mag_h)
+                senate_assignments.append(
+                    {
+                        unique_precincts[j]: assignment_s[j]
+                        for j in range(len(unique_precincts))
+                    }
+                )
+                senate_mags.append(dist_mag_s)
+            except Exception as e:
+                print(f"Warning: Failed to create OL9 district for map {i}. Error: {e}")
+                continue
+
+        results["House"] = {
+            "assignment": house_assignments,
+            "district_magnitudes": house_mags,
+        }
+        results["Senate"] = {
+            "assignment": senate_assignments,
+            "district_magnitudes": senate_mags,
         }
     return results
 
 
-if __name__ == "__main__":
-    # Load voting results
-    data, house2024, senate2024, house_subset, senate_subset = load_data()
+def get_district_maps(
+    graph: nx.Graph, data: pd.DataFrame, scenario: str, n_maps: int
+) -> Dict[str, Any]:
+    """
+    A cached wrapper for generating district maps for a given scenario.
 
-    # Turn our dataframe into a NetworkX Graph
-    G = graph_from_df(data)
-    G = connect_graph(G)
+    Args:
+        graph: The NetworkX precinct graph.
+        data: The precinct DataFrame.
+        scenario: The electoral scenario name (e.g., "MMP", "OL5").
+        n_maps: The number of maps to generate.
 
-    # Get estimates of crossover voting, from real 2024 data
-    # as well as our 4-party model
-    res = fit_crossover(data)
-    result2, result4 = fit_shor_mccarty()
+    Returns:
+        A dictionary containing lists of assignments and district magnitudes for House and Senate.
+    """
+    print(f"Generating {n_maps} maps for scenario: {scenario}...")
+    return _get_maps_for_scenario(graph, data, scenario, n_maps)
 
-    # Loop through different electoral scenarios
-    single_member_districts = None
-    legislatures = {}
-    n_maps = 1000
-    district_mags = None
-    # Big for loop to go through all scenarios
-    for scenario in ["MMP", "OL9", "OL5"]:  # ensure MMP comes before OL9 for caching
-        legislatures[scenario] = {}
-        the_maps = get_district_maps(
-            G, scenario, n_maps=n_maps, single_member_districts=single_member_districts
+
+# --- Vote Simulation and Seat Allocation ---
+
+
+def jefferson_method(
+    votes: Dict[str, float], allocated_seats: Dict[str, int], seats_to_allocate: int
+) -> Dict[str, int]:
+    """Allocates seats using the Jefferson/D'Hondt method."""
+    seats = allocated_seats.copy()
+    parties = [p for p, v in votes.items() if v > 0]
+    if not parties:
+        return seats
+
+    for _ in range(seats_to_allocate):
+        quotients = {p: votes[p] / (seats[p] + 1) for p in parties}
+        most_deserving = max(quotients, key=quotients.get)
+        seats[most_deserving] += 1
+    return seats
+
+
+def simulate_district_votes(
+    district_df: pd.DataFrame,
+    models: Dict,
+    n_parties: int,
+    partisan_trend: str,
+    crossover_method="district",
+) -> np.ndarray:
+    """
+    Simulates party vote shares within districts based on presidential vote,
+    partisan trend, ticket-splitting, and number of parties.
+    """
+    trend_alpha = {"more_gop": -0.2, "more_dem": 0.2, "no_change": 0.0}[partisan_trend]
+    gop_share = modify_2party_share(district_df["2partyshare"].values, trend_alpha)
+
+    # ticket-splitting should be done at the district - not precinct level,
+    # because candidate quality is a district-level feature
+    if crossover_method == "district":
+        crossover_model = models["crossover"]
+        # 1. Identify the unique districts.
+        unique_districts = district_df["district"].unique()
+        n_districts = len(unique_districts)
+
+        # 2. Generate one random modification value for each unique district.
+        district_modifications = norm(
+            loc=crossover_model.x[0], scale=crossover_model.x[1]
+        ).rvs(size=n_districts)
+
+        # 3. Create a map to associate each district with its random modification value.
+        modification_map = pd.Series(district_modifications, index=unique_districts)
+
+        # 4. Apply the district-level modification to each precinct.
+        # All precincts in the same district will receive the same modification.
+        precinct_level_modification = (
+            district_df["district"].map(modification_map).values
         )
-        # save for later
-        if scenario == "MMP":
-            single_member_districts = the_maps["House"]["assignment"]
-        for partisan_trend in ["no_change", "more_gop", "more_dem"]:
-            print("partisan trend:", partisan_trend)
-            legislatures[scenario][partisan_trend] = {}
-            for n_parties in [2, 4]:
-                print("n parties:", n_parties)
-                legislatures[scenario][partisan_trend][n_parties] = []
-                for i, assignment in enumerate(the_maps["House"]["assignment"]):
-                    scenario_dictionary = {
-                        "scenario_name": scenario,
-                        "n_parties": n_parties,
-                        "partisan_trend": partisan_trend,
-                    }
-                    if scenario != "OL9":
-                        assigned_seats = legislature_given_map(
-                            assignment,
-                            data,
-                            scenario_dictionary=scenario_dictionary,
-                            res=res,
-                            result4=result4,
-                            district_magnitudes=None,
-                        )
-                    else:
-                        assigned_seats = legislature_given_map(
-                            assignment,
-                            data,
-                            scenario_dictionary=scenario_dictionary,
-                            res=res,
-                            result4=result4,
-                            district_magnitudes=the_maps["House"][
-                                "district_magnitudes"
-                            ][i],
-                        )
-                    legislatures[scenario][partisan_trend][n_parties].append(
-                        assigned_seats
-                    )
-                if scenario == "OL5" or scenario == "OL9":
-                    for i, assignment in enumerate(the_maps["Senate"]["assignment"]):
-                        scenario_dictionary = {
-                            "scenario_name": scenario,
-                            "n_parties": n_parties,
-                            "partisan_trend": partisan_trend,
-                        }
-                        assigned_seats_senate = legislature_given_map(
-                            assignment,
-                            data,
-                            scenario_dictionary=scenario_dictionary,
-                            res=res,
-                            result4=result4,
-                            district_magnitudes=the_maps["Senate"][
-                                "district_magnitudes"
-                            ][i],
-                        )
-                        for party in assigned_seats.keys():
-                            legislatures[scenario][partisan_trend][n_parties][i][
-                                party
-                            ] += assigned_seats_senate[party]
 
-with open("saved_legislatures.pkl", "wb") as f:
-    pickle.dump(legislatures, f)
+        gop_share = np.clip(gop_share + precinct_level_modification, 0, 1).reshape(
+            -1, 1
+        )
+    else:
+        gop_share = np.clip(gop_share, 0, 1).reshape(-1, 1)
+
+    # GOP + Dem add up to 1 in any case
+    dem_share = np.clip(1.0 - gop_share, 0, 1).reshape(-1, 1)
+
+    if n_parties == 2:
+        return np.concatenate([dem_share, gop_share], axis=1)
+
+    def progressive_fraction(x):
+        return 0.1 + (1.0 - x) * (0.65 - 0.1)
+
+    def maga_fraction(x):
+        return 0.1 + x * (0.72 - 0.1)
+
+    prog_votes = np.array(progressive_fraction(gop_share) * dem_share).reshape(-1, 1)
+    dem_votes = np.array((1.0 - progressive_fraction(gop_share)) * dem_share).reshape(
+        -1, 1
+    )
+    gop_votes = np.array((1.0 - maga_fraction(gop_share)) * gop_share).reshape(-1, 1)
+    maga_votes = np.array(maga_fraction(gop_share) * gop_share).reshape(-1, 1)
+
+    return np.concatenate([prog_votes, dem_votes, gop_votes, maga_votes], axis=1)
 
 
-def summary_plots(legislature_dict, filename=None):
-    """Under construction"""
-    alpha = 0.7
-    bins = range(0, 100)
-    for scenario in legislature_dict.keys():
-        for n_parties in [2, 4]:
-            for partisan_trend in legislatures[list(legislatures.keys())[0]].keys():
-                leg_df = pd.DataFrame(
-                    legislature_dict[scenario][partisan_trend][n_parties]
+def _allocate_seats(
+    simulated_district_votes: np.ndarray,
+    party_names: List[str],
+    scenario: Dict,
+    district_magnitudes: List[int],
+) -> Dict[str, int]:
+    """Helper function to allocate seats based on the scenario."""
+    total_seats = {p: 0 for p in party_names}
+    scenario_name = scenario["scenario_name"]
+
+    if scenario_name in ["OL1", "MMP"]:
+        for row in simulated_district_votes:
+            winner = party_names[np.argmax(row)]
+            total_seats[winner] += 1
+        if scenario_name == "MMP":
+            statewide_votes = np.sum(simulated_district_votes, axis=0)
+            minimum_seats = np.floor(
+                MMP_TOTAL_SEATS * statewide_votes / statewide_votes.sum()
+            )
+            for i, party in enumerate(party_names):
+                if total_seats[party] < minimum_seats[i]:
+                    total_seats[party] = int(minimum_seats[i])
+            seats_to_allocate = int(MMP_TOTAL_SEATS - sum(total_seats.values()))
+            if seats_to_allocate > 0:
+                vote_dict = {p: statewide_votes[i] for i, p in enumerate(party_names)}
+                total_seats = jefferson_method(
+                    vote_dict, total_seats, seats_to_allocate
                 )
-                plt.hist(leg_df["D"], bins=bins, label="Democrat", alpha=alpha)
-                plt.hist(leg_df["R"], bins=bins, label="Republican", alpha=alpha)
-                if n_parties > 2:
-                    plt.hist(leg_df["M"], bins=bins, label="MAGA", alpha=alpha)
-                    plt.hist(leg_df["P"], bins=bins, label="Progressive", alpha=alpha)
-                plt.ylabel("Count")
-                plt.xlabel("Seats")
-                plt.title(
-                    "Scenario: "
-                    + scenario
-                    + ", "
-                    + str(n_parties)
-                    + " Parties"
-                    + ", "
-                    + partisan_trend
+    elif scenario_name in ["OL5", "OL9"]:
+        for i, row in enumerate(simulated_district_votes):
+            dist_mag = (
+                OL5_DISTRICT_MAGNITUDE
+                if scenario_name == "OL5"
+                else district_magnitudes[i]
+            )
+            vote_dict = {p: row[j] for j, p in enumerate(party_names)}
+            district_seats = jefferson_method(
+                vote_dict, {p: 0 for p in party_names}, dist_mag
+            )
+            for party, seats in district_seats.items():
+                total_seats[party] += seats
+    return {p: int(v) for p, v in total_seats.items()}
+
+
+def run_election(
+    assignment: List,
+    data: pd.DataFrame,
+    models: Dict,
+    scenario: Dict,
+    district_magnitudes: List[int] = None,
+    return_districts=False,
+) -> Dict[str, int]:
+    """
+    Calculates the legislative seat breakdown for a given map and scenario.
+    """
+    districts = data.copy()
+    districts["district"] = districts["unique_precinct"].map(dict(assignment))
+
+    party_names = {2: ["D", "R"], 4: ["P", "D", "R", "M"]}[scenario["n_parties"]]
+
+    simulated_precinct_votes = simulate_district_votes(
+        districts, models, scenario["n_parties"], scenario["partisan_trend"]
+    )
+    total_legislator_votes = np.array(
+        districts["STATE_REP_GOP"].values + districts["STATE_REP_DEM"].values
+    ).reshape(-1, 1)
+    districts[party_names] = simulated_precinct_votes * np.repeat(
+        total_legislator_votes, repeats=scenario["n_parties"], axis=1
+    )
+    grouped = districts.groupby("district")[
+        party_names + ["KAMALA D. HARRIS", "DONALD J. TRUMP"]
+    ].sum()
+    simulated_district_votes = grouped[party_names].values
+
+    total_seats = _allocate_seats(
+        simulated_district_votes, party_names, scenario, district_magnitudes
+    )
+
+    if return_districts:
+        winners = [party_names[np.argmax(row)] for row in simulated_district_votes]
+        return total_seats, grouped, winners
+
+    return total_seats
+
+
+# Manually set module names for consistent caching even with Jupyter
+load_and_prepare_graph_.__module__ = "pro-rep.module"
+load_and_prepare_graph = memory.cache(load_and_prepare_graph_)
+
+draw_new_districts_.__module__ = "pro-rep.module"
+draw_new_districts = memory.cache(draw_new_districts_, ignore=["graph"])
+
+create_variable_magnitude_districts_.__module__ = "pro-rep.module"
+create_variable_magnitude_districts = memory.cache(
+    create_variable_magnitude_districts_, ignore=["graph"]
+)
+
+_get_maps_for_scenario_.__module__ = "pro-rep.module"
+_get_maps_for_scenario = memory.cache(_get_maps_for_scenario_, ignore=["graph", "data"])
+
+
+def main():
+    """Main function to run the entire redistricting simulation."""
+    graph, data, house2024, senate2024 = load_and_prepare_graph()
+    data["2partyshare"] = data["DONALD J. TRUMP"] / (
+        data["KAMALA D. HARRIS"] + data["DONALD J. TRUMP"]
+    )
+    models = fit_statistical_models(data)
+
+    all_results = {}
+    # There are a bunch of scenarios to investigate. Let's organize them:
+    scenarios = {
+        "electoral_system": ["MMP", "OL1", "OL5", "OL9", "MMP"],
+        "partisan_trend": ["more_gop", "more_dem", "no_change"],
+        "n_parties": [2, 4],
+    }
+
+    all_results = {}
+    # Get all combinations
+    for combination in itertools.product(*scenarios.values()):
+        scenario = dict(zip(scenarios.keys(), combination))
+        print(
+            f"--- Running: Scenario={scenario['electoral_system']}, Trend={scenario['partisan_trend']}, Parties={scenario['n_parties']} ---"
+        )
+
+        electoral_system = scenario["electoral_system"]
+        partisan_trend = scenario["partisan_trend"]
+        n_parties = scenario["n_parties"]
+        # Create nested structure if it doesn't exist
+        if electoral_system not in all_results:
+            all_results[electoral_system] = {}
+
+        if partisan_trend not in all_results[electoral_system]:
+            all_results[electoral_system][partisan_trend] = {}
+
+        if n_parties not in all_results[electoral_system][partisan_trend]:
+            all_results[electoral_system][partisan_trend][n_parties] = {}
+        all_results[scenario["electoral_system"]][scenario["partisan_trend"]][
+            scenario["n_parties"]
+        ] = {}
+
+        the_maps = get_district_maps(
+            graph, data, scenario["electoral_system"], n_maps=N_MAPS
+        )
+
+        scenario_config = {
+            "scenario_name": scenario["electoral_system"],
+            "n_parties": scenario["n_parties"],
+            "partisan_trend": scenario["partisan_trend"],
+        }
+
+        house_results = []
+        for i in trange(
+            len(the_maps["House"]["assignment"]), desc="Simulating House maps"
+        ):
+            house_assignment = the_maps["House"]["assignment"][i]
+            house_mags = the_maps["House"]["district_magnitudes"]
+
+            house_seats = run_election(
+                house_assignment,
+                data,
+                models,
+                scenario_config,
+                district_magnitudes=house_mags[i] if house_mags else None,
+            )
+            house_results.append(house_seats)
+
+        if scenario["electoral_system"] in ["OL5", "OL9", "OL1"]:
+            for i in trange(
+                len(the_maps["Senate"]["assignment"]),
+                desc="Simulating Senate maps",
+            ):
+                senate_assignment = the_maps["Senate"]["assignment"][i]
+                senate_mags = the_maps["Senate"]["district_magnitudes"]
+
+                senate_seats = run_election(
+                    senate_assignment,
+                    data,
+                    models,
+                    scenario_config,
+                    district_magnitudes=senate_mags[i] if senate_mags else None,
                 )
-                plt.legend()
-                plt.savefig(f"plots/{scenario}_{str(n_parties)}_{partisan_trend}.pdf")
-                plt.show()
+
+                if i < len(house_results):
+                    for party, seats in senate_seats.items():
+                        house_results[i][party] = house_results[i].get(party, 0) + seats
+
+        all_results[scenario["electoral_system"]][scenario["partisan_trend"]][
+            scenario["n_parties"]
+        ] = house_results
+
+    with open("simulation_results.pkl", "wb") as f:
+        pickle.dump(all_results, f)
+    print("\nSimulation complete. Results saved to simulation_results.pkl")
 
 
-print("drawing plots...")
-summary_plots(legislatures)
+if __name__ == "__main__":
+    main()

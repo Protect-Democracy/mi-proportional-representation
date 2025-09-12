@@ -1,4 +1,9 @@
 import geopandas as gp
+from typing import Any, Dict
+import numpy as np
+import pandas as pd
+from scipy.optimize import minimize
+from scipy.stats import norm
 
 
 def dissolve_small_into_large(small, large, identifier_column):
@@ -33,7 +38,7 @@ def dissolve_small_into_large(small, large, identifier_column):
 
     # Merge the aggregated data back into the large dataframe.
     # A 'left' merge keeps all geometries from the 'large' dataframe.
-    result = large.merge(
+    return large.merge(
         aggregated_data,
         left_on=identifier_column,
         right_index=True,  # Merge on the index of the aggregated data
@@ -41,9 +46,43 @@ def dissolve_small_into_large(small, large, identifier_column):
     )
 
     # Replace any potential NaN values with 0 for cleaner data
-    result[numeric_cols_to_sum] = result[numeric_cols_to_sum].fillna(0)
 
-    return result
+
+def fit_statistical_models(data: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Fits statistical models for ticket-splitting (crossover voting).
+
+    Args:
+        data: The precinct-level data containing voting results.
+
+    Returns:
+        A dictionary containing the fitted models.
+    """
+    print("Fitting statistical models for vote simulation...")
+
+    # Fit crossover voting model (ticket-splitting)
+    vote_diff = data["DONALD J. TRUMP"] / (
+        data["KAMALA D. HARRIS"] + data["DONALD J. TRUMP"]
+    ) - data["STATE_REP_GOP"] / (data["STATE_REP_DEM"] + data["STATE_REP_GOP"])
+    hist, bins = np.histogram(vote_diff, bins=np.linspace(-0.5, 0.5, 201), density=True)
+
+    def norm_loss(params, x=bins[:-1], y=hist):
+        return np.mean(((norm.pdf(x, loc=params[0], scale=params[1])) - y) ** 2)
+
+    crossover_res = minimize(
+        norm_loss, x0=[0, 0.02], tol=1e-4, options={"maxiter": 100}
+    )
+
+    return {"crossover": crossover_res}
+
+
+def modify_2party_share(value: float, alpha: float) -> float:
+    """Applies a partisan trend shift to the 2-party vote share."""
+    if alpha > 0:  # Shift towards GOP
+        return value - alpha * (value - value**2)
+    if alpha < 0:  # Shift towards DEM
+        return value + alpha * (value - value**0.5)
+    return value
 
 
 def label_small_with_large(small, large, identifier_column, label_column_name=None):

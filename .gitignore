@@ -10,8 +10,23 @@ Thumbs.db
 # General
 log/
 *.log
+__pycache__/
 
-__pycache__
+# Caches & Data Files
+# --------------------
+# Ignore Python pickle files
+*.pkl
+*.pickle
+
+# Ignore joblib-specific caches and files
+*.joblib
+__joblib_cache__/
+joblib_cache/
+
+# Ignore other common cache directories
+.cache/
+cache/
+
 # Suggested to add gitignores from Github that are relevant to the
 # language(s) of your project.
 # https://github.com/github/gitignore

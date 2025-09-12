@@ -1,27 +1,169 @@
+"""
+Plotting code - run this file to produce the summary
+plots in the ../plots/ directory
+"""
+
+import pickle
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
-from matplotlib.cm import get_cmap
-from scipy.stats import norm
-from scipy.stats import gaussian_kde
+from scipy.stats import binned_statistic, norm
 
-from src.data_loading import (
-    load_data,
+
+from redistricting import (
+    get_district_maps,
+    run_election,
+    load_and_prepare_graph,
+    simulate_district_votes,
+    fit_statistical_models,
 )
-from src.redistricting import (
-    two_component_gaussian,
-    four_component_gaussian,
-    fit_crossover,
-    fit_shor_mccarty,
-    party_popularity,
-)
+from functools import wraps
+import os
 
 
+# Consistent use of colors for parties
+MAGA_COLOR = "orange"
+GOP_COLOR = "red"
+DEM_COLOR = "blue"
+PROG_COLOR = "green"
+
+# Setting some rcParams for consistent plot styling
+plt.rcParams["text.color"] = "#2E2D31"
+plt.rcParams["axes.titlecolor"] = "#2E2D31"
+plt.rcParams["axes.labelcolor"] = "#2E2D31"
+plt.rcParams["axes.edgecolor"] = "#2E2D31"
+plt.rcParams["xtick.color"] = "#2E2D31"
+plt.rcParams["ytick.color"] = "#2E2D31"
+plt.rcParams["xtick.labelcolor"] = "#2E2D31"
+plt.rcParams["ytick.labelcolor"] = "#2E2D31"
+plt.rcParams["savefig.facecolor"] = "#FBF6ED"
+plt.rcParams["figure.facecolor"] = "#FBF6ED"
+plt.rcParams["axes.facecolor"] = "#FBF6ED"
+
+plt.rcParams["savefig.facecolor"] = "gray"
+plt.rcParams["figure.facecolor"] = "gray"
+plt.rcParams["axes.facecolor"] = "gray"
+
+
+def plot_styler(
+    save_dir="../plots/",
+    facecolor="#FBF6ED",
+):
+    """
+    A decorator for matplotlib plotting functions to abstract away boilerplate code.
+
+    This decorator handles:
+    1. Setting the background colors for the figure, axes, and saved file.
+    2. Saving the figure to a specified directory if a 'filename' kwarg is provided.
+    3. Showing the plot (can be disabled with show_plot=False).
+    4. Cleaning up the plot figure after saving/showing to prevent state leakage.
+
+    Args:
+        save_dir (str): The directory where plots will be saved.
+        savefig_facecolor (str): Background color for the saved image.
+        figure_facecolor (str): Background color for the figure.
+        axes_facecolor (str): Background color for the axes.
+    """
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            """
+            Wrapper function that applies styling, saves, and shows the plot.
+
+            NOTE: The decorated function should not call plt.savefig() or plt.show().
+
+            Additional kwargs accepted by the wrapper at call time:
+                filename (str, optional): If provided, the plot is saved with this
+                                          name in the `save_dir`. Defaults to None.
+                show_plot (bool, optional): If True, plt.show() is called.
+                                            Defaults to True.
+            """
+            # Store original rcParams to restore them later
+            original_params = {
+                "savefig.facecolor": plt.rcParams["savefig.facecolor"],
+                "figure.facecolor": plt.rcParams["figure.facecolor"],
+                "axes.facecolor": plt.rcParams["axes.facecolor"],
+            }
+
+            try:
+                # Apply new styles from the decorator arguments
+                plt.rcParams["savefig.facecolor"] = facecolor
+                plt.rcParams["figure.facecolor"] = facecolor
+                plt.rcParams["axes.facecolor"] = facecolor
+
+                # Call the user's plotting function
+                # This function is expected to create a plot but not show/save it
+                func_result = func(*args, **kwargs)
+
+                filename = kwargs.get("filename")
+                show_plot = kwargs.get("show_plot", True)
+
+                plt.tight_layout()
+
+                # Save the figure if a filename is provided
+                if filename:
+                    if not os.path.exists(save_dir):
+                        os.makedirs(save_dir)
+                    full_path = os.path.join(save_dir, filename)
+                    plt.savefig(full_path)
+                    print(f"Plot saved to '{full_path}'")
+
+                # Show the plot if requested
+                if show_plot:
+                    plt.show()
+
+                # Clean up the current figure to prevent it from affecting subsequent plots
+                plt.close("all")
+
+                return func_result
+
+            finally:
+                # Restore original rcParams to avoid side effects on other plots
+                plt.rcParams.update(original_params)
+
+        return wrapper
+
+    return decorator
+
+
+@plot_styler(facecolor="gray")
+def pop_density_map(blocks, filename=None):
+    """Look at Census data on population density."""
+    df = blocks.copy()
+    df["popdensity"] = df["POP20"] / df["ALAND20"]
+
+    plt.figure(figsize=[15, 15])
+    df.plot(
+        "popdensity",
+        cmap="plasma",
+        edgecolor="None",
+        linewidth=0,
+        vmin=0,
+        vmax=2 * 1e-3,
+        ax=plt.gca(),
+    )
+    plt.gca().set_axis_off()
+
+
+@plot_styler(facecolor="gray")
+def party_share_plot(data, filename=None):
+    """Look at 2024 2-party vote share (red = GOP, blue = Dem)."""
+    df = data.copy()
+    df["2partyshare"] = df["DONALD J. TRUMP"] / (
+        df["DONALD J. TRUMP"] + df["KAMALA D. HARRIS"]
+    )
+    plt.figure(figsize=[15, 15])
+    df.plot("2partyshare", ax=plt.gca(), cmap="coolwarm", vmin=0, vmax=1)
+
+    plt.gca().set_axis_off()
+
+
+@plot_styler(facecolor="lightgray")
 def district_heatmap(precincts, districts, filename=None):
-    fig = plt.figure(figsize=[20, 20])
-    plt.rcParams["savefig.facecolor"] = "1a1b26"
-    plt.rcParams["figure.facecolor"] = "1a1b26"
-    plt.rcParams["axes.facecolor"] = "1a1b26"
+    """Same as the party_share_plot, but overlaid with district boundaries."""
+    plt.figure(figsize=[20, 20])
 
     df = precincts.copy()
     df["2partyshare"] = df["DONALD J. TRUMP"] / (
@@ -36,83 +178,14 @@ def district_heatmap(precincts, districts, filename=None):
         linewidth=0.0,
         edgecolor="None",
     )
-    districts.plot(edgecolor="k", linewidth=2.0, ax=plt.gca(), facecolor="None")
+    if districts is not None:
+        districts.plot(edgecolor="k", linewidth=2.0, ax=plt.gca(), facecolor="None")
     plt.gca().set_axis_off()
-    plt.tight_layout()
-    if filename is not None:
-        plt.savefig("plots/" + filename)
-    plt.show()
 
 
-def partisanship_scatterplot(house_subset, senate_subset, filename=None):
-    plt.scatter(house_subset["np_score"], house_subset["2partyshare"], label="house")
-    plt.scatter(senate_subset["np_score"], senate_subset["2partyshare"], label="senate")
-    plt.xlabel("Shor-McCarty score")
-    plt.ylabel("2024 2-party share")
-    plt.legend()
-    if filename is not None:
-        plt.savefig("plots/" + filename)
-    plt.show()
-
-
-def pop_density_map(blocks, filename=None):
-    df = blocks.copy()
-    df["popdensity"] = df["POP20"] / df["ALAND20"]
-    fig = plt.figure(figsize=[20, 20])
-    df.plot(
-        "popdensity", cmap="YlGnBu", edgecolor="None", linewidth=0, vmin=0, vmax=1e-3
-    )
-    plt.gca().set_axis_off()
-    plt.tight_layout()
-    if filename is not None:
-        plt.savefig("plots/" + filename)
-    plt.show()
-
-
-def party_share_plot(data, filename=None):
-    df = data.copy()
-    df["2partyshare"] = df["DONALD J. TRUMP"] / (
-        df["DONALD J. TRUMP"] + df["KAMALA D. HARRIS"]
-    )
-    fig = plt.figure(figsize=[15, 15])
-    df.plot("2partyshare", ax=plt.gca(), cmap="coolwarm", vmin=0, vmax=1)
-
-    plt.gca().set_axis_off()
-    plt.tight_layout()
-    if filename is not None:
-        plt.savefig("plots/" + filename)
-    plt.show()
-
-
-def shor_mccarty_plots(leg):
-    cmap = get_cmap("coolwarm")
-    for year in range(2000, 2023):
-        year_col = [c for c in leg.columns if str(year) in c][0]
-        subleg = leg[~leg[year_col].isna()]
-        plt.hist(
-            subleg["np_score"],
-            bins=np.linspace(-2.0, 2.0, 101),
-            histtype="step",
-            color=cmap((year - 2000) / 22),
-        )
-    plt.show()
-
-    year_range = range(1996, 2023)
-    bins = np.linspace(-2, 2, 101)
-    M = np.zeros((len(year_range), len(bins) - 1))
-    for i, year in enumerate(year_range):
-        year_col = [c for c in leg.columns if str(year) in c][0]
-        subleg = leg[~leg[year_col].isna()]
-        M[i] = np.histogram(subleg["np_score"], bins=bins, density=True)[0]
-    plt.imshow(
-        M.T, origin="lower", aspect=7, extent=[year_range[0], year_range[-1], -2, 2]
-    )
-    plt.ylabel("Shor-McCarty Score")
-    plt.show()
-
-
-def crossover_plot(data, res, filename=None):
-    fig = plt.figure(figsize=[12, 6])
+@plot_styler(facecolor="lightgray")
+def crossover_plot(data, models, filename=None):
+    plt.figure(figsize=[12, 6])
     plt.subplot(121)
 
     plt.scatter(
@@ -146,168 +219,208 @@ def crossover_plot(data, res, filename=None):
         h[1][:-1], norm.pdf(h[1][:-1], loc=res.x[0], scale=res.x[1]), label="Model fit"
     )
     plt.legend(loc="upper right")
-    plt.tight_layout()
-
-    if filename is not None:
-        plt.savefig("plots/" + filename)
-    plt.show()
 
 
-def party_breakdown_plot(leg, res, result2, result4, filename=None):
-    fig = plt.figure(figsize=[12, 5])
-    plt.subplot(121)
-    xspace = np.linspace(-2, 2, 101)
+@plot_styler()
+def legislature_histogram(
+    all_results,
+    scenario_name="OL9",
+    partisan_change="no_change",
+    n_parties=4,
+):
+    fig = plt.figure(figsize=[10, 6])
+    bins = np.arange(100)
+    if n_parties == 4:
+        plt.hist(
+            [v["P"] for v in all_results[scenario_name][partisan_change][n_parties]],
+            alpha=0.5,
+            bins=bins,
+            label="Progressive",
+            facecolor=PROG_COLOR,
+        )
+        plt.hist(
+            [v["M"] for v in all_results[scenario_name][partisan_change][n_parties]],
+            alpha=0.5,
+            bins=bins,
+            label="MAGA",
+            facecolor=MAGA_COLOR,
+        )
+    else:
+        plt.axvline(19 + 64 * (100 / 110), ls="--", lw=2.0, c="red")
+        plt.axvline(19 + 46 * (100 / 110), ls="--", lw=2.0, c="blue")
     plt.hist(
-        leg["np_score"],
-        bins=np.linspace(-2, 2, 101),
+        [v["D"] for v in all_results[scenario_name][partisan_change][n_parties]],
+        alpha=0.5,
+        bins=bins,
+        label="DEM",
+        facecolor=DEM_COLOR,
+    )
+    plt.hist(
+        [v["R"] for v in all_results[scenario_name][partisan_change][n_parties]],
+        alpha=0.5,
+        bins=bins,
+        label="GOP",
+        facecolor=GOP_COLOR,
+    )
+    plt.legend(loc="upper left")
+    plt.xlabel("Seats")
+    plt.ylabel("Frequency")
+
+
+@plot_styler()
+def precinct_partisanship_plot(districts, filename=None):
+    fig = plt.figure(figsize=[10, 6])
+    bins = np.linspace(0, 1, 71)
+    plt.hist(districts["2partyshare"], color="darkgray", bins=bins, density=True)
+    plt.hist(
+        districts["2partyshare"],
+        histtype="step",
+        bins=bins,
+        color="k",
         density=True,
-        color="tab:blue",
-        label="Data",
+        lw=1.5,
     )
-    plt.plot(
-        xspace,
-        two_component_gaussian(result2.x, xspace),
-        c="w",
-        lw=2,
-        ls="--",
-        label="2 component fit",
-    )
-    plt.plot(
-        xspace,
-        four_component_gaussian(result4.x, xspace),
-        c="violet",
-        lw=2,
-        ls="--",
-        label="4 component fit",
-    )
-    plt.legend(loc="upper left")
-    plt.xlabel("Shor-McCarty Index")
     plt.ylabel("Frequency")
-    plt.title("All US Legislators")
-    plt.xlim([-2, 2])
-    plt.subplot(122)
-    plt.plot(
-        xspace,
-        result4.x[0] * norm(loc=result4.x[1], scale=result4.x[2]).pdf(xspace),
-        c="green",
-        lw=2,
-        ls="--",
-        label="Progressive Party",
-    )
-    plt.plot(
-        xspace,
-        result4.x[3] * norm(loc=result4.x[4], scale=result4.x[5]).pdf(xspace),
-        c="blue",
-        lw=2,
-        ls="--",
-        label="Democratic Party",
-    )
-    plt.plot(
-        xspace,
-        result4.x[6] * norm(loc=result4.x[7], scale=result4.x[8]).pdf(xspace),
-        c="orange",
-        lw=2,
-        ls="--",
-        label="Republican Party",
-    )
-    plt.plot(
-        xspace,
-        result4.x[9] * norm(loc=result4.x[10], scale=result4.x[11]).pdf(xspace),
-        c="r",
-        lw=2,
-        ls="--",
-        label="MAGA Party",
-    )
-    plt.plot(
-        xspace,
-        two_component_gaussian(result2.x, xspace),
-        c="w",
-        lw=2,
-        ls="--",
-        label="2 component fit",
-    )
-    plt.ylim([0, 0.7])
-    plt.xlim([-2, 2])
-    plt.xlabel("Shor-McCarty Index")
-    plt.ylabel("Frequency")
-    plt.legend(loc="upper left")
-    plt.title("4-Party Model")
-    plt.tight_layout()
-    if filename is not None:
-        plt.savefig("plots/" + filename)
-    plt.show()
+    plt.xlabel("Precinct partisanship")
 
 
-def crossover_voting_plots(house_subset, senate_subset, filename=None):
-    """Under construction"""
-    # for some reason, mapping partisan leaning onto our party model
-    # seems to do a good job in a 2-party system of predicting the winner
-    # Now see if this model matches the observed data
-    kde = gaussian_kde(
-        np.vstack(
-            [
-                np.hstack([senate_subset["2partyshare"], house_subset["2partyshare"]]),
-                np.hstack([senate_subset["np_score"], house_subset["np_score"]]),
-            ]
-        ),
-        bw_method=0.25,
+@plot_styler()
+def stacked_precinct_model_plot(districts, models, filename=None):
+    fig = plt.figure(figsize=[10, 6])
+    bins = np.linspace(0, 1.0, 71)
+    s = simulate_district_votes(
+        pd.DataFrame({"2partyshare": bins[:-1]}),
+        models,
+        4,
+        "no_change",
+        crossover_method=None,
     )
-    bins = np.linspace(0, 1, 51)
-    dem_prob = np.zeros((50))
-    gop_prob = np.zeros((50))
-    for i in range(len(bins) - 1):
-        dem_prob[i] = kde.integrate_box([bins[i], -2.0], [bins[i + 1], 0.0])
-        gop_prob[i] = kde.integrate_box([bins[i], 0.0], [bins[i + 1], 2.0])
-        dem_prob[i] = dem_prob[i] / (dem_prob[i] + gop_prob[i])
-        gop_prob[i] = 1.0 - dem_prob[i]
-    w = np.zeros((len(bins)))
-    for i, bin in enumerate(bins):
-        y, z = party_popularity(bin, result4)
-        w[i] = y[0] / (y[1] + y[0])
-    plt.fill_between(bins[:-1], 0, gop_prob, color="r")
-    plt.fill_between(bins[:-1], gop_prob, 1.0, color="b")
-    plt.plot(bins, 1.0 - w, ls="--", c="k", lw=2.0)
+    h = np.histogram(districts["2partyshare"], bins=bins, density=True)
+    plt.hist(
+        districts["2partyshare"],
+        histtype="step",
+        bins=bins,
+        color="k",
+        density=True,
+        lw=1.5,
+    )
+
+    labels = ["Progressive", "Democratic", "Republican", "MAGA"]
+    colors = [PROG_COLOR, DEM_COLOR, GOP_COLOR, MAGA_COLOR]
+    y_offset = np.zeros_like(s[:, 0] * h[0])
+    legend_handles = []
+
+    for i, (label, color) in enumerate(zip(labels, colors)):
+        y_data = s[:, i] * h[0]
+        plt.fill_between(
+            bins[:-1], y_offset, y_offset + y_data, step="post", color=color
+        )
+        y_offset += y_data
+        plt.step(bins[:-1], y_offset, where="post", color="k", lw=1.0)
+        legend_handles.append(
+            mpatches.Patch(facecolor=color, edgecolor="k", label=label)
+        )
+
     plt.xlim([0, 1])
-    plt.ylim([0, 1])
-
-    plt.tight_layout()
-    if filename is not None:
-        plt.savefig("plots/" + filename)
-    plt.show()
+    plt.legend(handles=legend_handles, loc="upper right")
+    plt.ylabel("Frequency")
+    plt.xlabel("Precinct partisanship")
 
 
-def summary_plots(legislature_dict, filename=None):
-    """Under construction"""
-    for scenario in legislature_dict.keys():
-        for n_parties in [2, 4]:
-            leg_df = pd.DataFrame(legislature_dict[scenario]["no_change"][n_parties])
-            plt.hist(leg_df["D"], bins=range(0, 100), label="Democrat", alpha=0.7)
-            plt.hist(leg_df["R"], bins=range(0, 100), label="Republican", alpha=0.7)
-            if n_parties > 2:
-                plt.hist(leg_df["M"], bins=range(0, 100), label="MAGA", alpha=0.7)
-                plt.hist(
-                    leg_df["P"], bins=range(0, 100), label="Progressive", alpha=0.7
-                )
-            plt.ylabel("Count")
-            plt.xlabel("n_parties in legislature")
-            plt.title(scenario + ", " + str(n_parties) + "Parties")
-            plt.legend()
-            plt.show()
+@plot_styler(facecolor="gray")
+def district_crossover_heatmap(precincts, districts=None, filename=None):
+    fig = plt.figure(figsize=[20, 20])
+
+    df = precincts.copy()
+    df["2potusshare"] = df["DONALD J. TRUMP"] / (
+        df["DONALD J. TRUMP"] + df["KAMALA D. HARRIS"]
+    )
+    df["2partyshare"] = df["STATE_REP_GOP"] / (
+        df["STATE_REP_GOP"] + df["STATE_REP_DEM"]
+    )
+
+    df["plot"] = df["2potusshare"] - df["2partyshare"]
+    df.plot(
+        "plot",
+        ax=plt.gca(),
+        cmap="Spectral_r",
+        vmin=-0.15,
+        vmax=0.15,
+        linewidth=0.0,
+        edgecolor="None",
+    )
+
+    if districts is not None:
+        districts.plot(edgecolor="k", linewidth=2.0, ax=plt.gca(), facecolor="None")
+    plt.gca().set_axis_off()
+
+
+def hypothetical_legislature_from_potus(data):
+    # What would the legislature have looked like if House seats were
+    # determined by POTUS vote in 2024?
+    current_grouped = data.groupby("SLDLST")[
+        ["KAMALA D. HARRIS", "DONALD J. TRUMP", "STATE_REP_GOP", "STATE_REP_DEM"]
+    ].sum()
+    current_grouped["2potusshare"] = current_grouped["DONALD J. TRUMP"] / (
+        current_grouped["DONALD J. TRUMP"] + current_grouped["KAMALA D. HARRIS"]
+    )
+    current_grouped["2partyshare"] = current_grouped["STATE_REP_GOP"] / (
+        current_grouped["STATE_REP_GOP"] + current_grouped["STATE_REP_DEM"]
+    )
+    current_grouped["R_share"] = 1.0 * (
+        current_grouped["STATE_REP_GOP"] > current_grouped["STATE_REP_DEM"]
+    )
+    current_grouped["R_share_potus"] = 1.0 * (current_grouped["2potusshare"] > 0.5)
+    current_rs = int(np.sum(current_grouped["R_share"]))
+    hypothetical_rs = int(np.sum(current_grouped["R_share_potus"]))
+    print(f"Actual House composition: {current_rs} R, {110 - current_rs} D")
+    print(
+        f"POTUS-based House composition: {hypothetical_rs} R, {110 - hypothetical_rs} D"
+    )
+
+
+def main():
+    graph, data, house2024, senate2024 = load_and_prepare_graph()
+    data["2partyshare"] = data["DONALD J. TRUMP"] / (
+        data["KAMALA D. HARRIS"] + data["DONALD J. TRUMP"]
+    )
+    models = fit_statistical_models(data)
+
+    # Census data map
+    pop_density_map(data, filename="population_density.png")
+
+    # Vote share maps
+    party_share_plot(data, filename="party_share_plot.png")
+    district_heatmap(data, districts=house2024, filename="house_districts.png")
+    district_heatmap(data, districts=senate2024, filename="senate_districts.png")
+
+    # Plots to describe the 4-party model
+    precinct_partisanship_plot(data, filename="precinct_partisanship.png")
+    stacked_precinct_model_plot(data, models, filename="stacked_precinct_model.png")
+
+    # where did the state representative outperform the POTUS candidate?
+    district_crossover_heatmap(data, filename="relative_performance.png")
+
+    # a quick analysis function that is interesting
+    hypothetical_legislature_from_potus(data)
+
+    # Plots to evaluate the redistricting simulation results
+    try:
+        with open("simulation_results.pkl", "rb") as f:
+            all_results = pickle.load(f)
+    except:
+        print("Simulation results not found! Please run redistricting.py first.")
+
+    # Examples of examining legislature results
+    legislature_histogram(all_results, scenario_name="OL5")
+    legislature_histogram(all_results, scenario_name="OL9")
+    legislature_histogram(all_results, scenario_name="OL1")
+    legislature_histogram(all_results, scenario_name="MMP")
+    legislature_histogram(all_results, scenario_name="OL1", n_parties=2)
+    legislature_histogram(all_results, scenario_name="OL5", n_parties=2)
+    legislature_histogram(all_results, scenario_name="OL9", n_parties=2)
+    legislature_histogram(all_results, scenario_name="MMP", n_parties=2)
 
 
 if __name__ == "__main__":
-    # Load voting results
-    data, house2024, senate2024, house_subset, senate_subset = load_data()
-
-    party_share_plot(data, filename="party_share_plot.pdf")
-    district_heatmap(data, house2024)
-    district_heatmap(data, senate2024)
-    partisanship_scatterplot(house_subset, senate_subset)
-
-    leg = pd.read_stata("raw_data/legislator_data/shor_mccarty.dta")
-    shor_mccarty_plots(leg)
-
-    res = fit_crossover(data)
-    result2, result4 = fit_shor_mccarty()
-    crossover_plot(data, res)
-    party_breakdown_plot(leg, res, result2, result4)
+    main()

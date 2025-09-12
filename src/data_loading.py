@@ -1,3 +1,8 @@
+"""
+Code to match up official Michigan 2024 election results
+with shapefiles & Census data
+"""
+
 import geopandas as gp
 import pandas as pd
 import numpy as np
@@ -45,21 +50,21 @@ def load_and_format_votes():
 
     # Load data from files
     votes = pd.read_csv(
-        "raw_data/2024GEN/2024vote.txt",
+        "../raw_data/2024GEN/2024vote.txt",
         delimiter="\t",
         names=votes_cols,
         low_memory=False,
     )
 
     names = pd.read_csv(
-        "raw_data/2024GEN/2024name.txt",
+        "../raw_data/2024GEN/2024name.txt",
         delimiter="\t",
         names=names_cols,
         low_memory=False,
     )
 
     cities = pd.read_csv(
-        "raw_data/2024GEN/2024city.txt",
+        "../raw_data/2024GEN/2024city.txt",
         delimiter="\t",
         names=cities_cols,
         low_memory=False,
@@ -162,7 +167,7 @@ def load_and_format_votes():
 
 
 def reallocate_detroit_counting_board_votes(votes, candidate_columns):
-    crosswalk = pd.read_csv("raw_data/detroit_crosswalk.csv")
+    crosswalk = pd.read_csv("../raw_data/detroit_crosswalk.csv")
 
     # Split up Detroit & non-Detroit data
     is_detroit = votes["CityTownName"].str.contains("detroit", case=False)
@@ -222,7 +227,7 @@ def reallocate_detroit_counting_board_votes(votes, candidate_columns):
 
 def load_and_format_precincts_shapefile():
     # Now look at shapefile, which has 4339 precincts
-    df = gp.read_file("raw_data/2024_Voting_Precincts/2024_Voting_Precincts.shp")
+    df = gp.read_file("../raw_data/2024_Voting_Precincts/2024_Voting_Precincts.shp")
 
     # Fix a typo
     df.loc[df["Precinct_L"] == "3Macomb Township, Precinct 23", "Precinct_L"] = (
@@ -331,10 +336,10 @@ def merge_shapefiles_and_votes(votes, shapefiles):
 
 
 def load_legislature(precincts):
-    house2024 = gp.read_file("raw_data/tiger_lower_2024/tl_2024_26_sldl.shp")
+    house2024 = gp.read_file("../raw_data/tiger_lower_2024/tl_2024_26_sldl.shp")
     house2024 = house2024.to_crs("EPSG:3078")
 
-    senate2024 = gp.read_file("raw_data/tiger_upper_2024/tl_2024_26_sldu.shp")
+    senate2024 = gp.read_file("../raw_data/tiger_upper_2024/tl_2024_26_sldu.shp")
     senate2024 = senate2024.to_crs("EPSG:3078")
 
     house2024 = dissolve_small_into_large(
@@ -353,7 +358,7 @@ def load_legislature(precincts):
     )
 
     # Legislator data
-    leg = pd.read_stata("raw_data/legislator_data/shor_mccarty.dta")
+    leg = pd.read_stata("../raw_data/legislator_data/shor_mccarty.dta")
     leg = leg[leg["st"] == "MI"]
     # put names in first->last name order
     leg["name"] = leg["name"].apply(lambda x: " ".join(x.split(", ")[::-1]))
@@ -367,7 +372,7 @@ def load_legislature(precincts):
     house2024.drop_duplicates("geometry", inplace=True)
     senate2024.drop_duplicates("geometry", inplace=True)
     # current legislature makeup
-    plural = pd.read_csv("raw_data/plural.csv")
+    plural = pd.read_csv("../raw_data/plural.csv")
 
     # Let's see how many people are in both the shor-mccarty data
     # and were also elected in 2024
@@ -402,7 +407,7 @@ def load_tiger_blocks():
     """
     # Define the URL for the TIGER shapefile and the local file paths
     url = "https://www2.census.gov/geo/tiger/TIGER2024/TABBLOCK20/tl_2024_26_tabblock20.zip"
-    local_dir = "raw_data/tiger_blocks"
+    local_dir = "../raw_data/tiger_blocks"
     shp_filename = "tl_2024_26_tabblock20.shp"
     local_shp_path = os.path.join(local_dir, shp_filename)
     local_zip_path = os.path.join(local_dir, os.path.basename(url))
