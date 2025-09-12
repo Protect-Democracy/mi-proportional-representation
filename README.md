@@ -32,7 +32,7 @@ The maps you generate will be cached locally, so you can make new plots later wi
 - Does this in scenarios where Michigan moves to the right, to the left, or stays the same.
 - Generates some plots to inspect the results.
 
-Footnote: the "toy models" used here can be found in `redistricting.py` here:
+Footnote: the "toy models" used here can be found in `redistricting.py` in the `simulate_district_votes` [function](https://github.com/Protect-Democracy/mi-proportional-representation/blob/721932ee1868cc6a54f7d593877a9046a9780d89/src/redistricting.py#L380). 
 (This repo remains a work in progress - PRs are welcome!)
 
 ## Data
