@@ -6,15 +6,21 @@ Repo for doing analysis of Michigan elections under different proportional elect
 ### Prerequisites
 - `uv` (follow the instructions [here](https://docs.astral.sh/uv/#installation)). 
 ### Instructions
+Clone the repo & set up Python environment:
 ```
 git clone git@github.com:Protect-Democracy/mi-proportional-representation.git
 cd mi-proportional-representation
 uv sync
+```
+Next, you'll need to manually download [this](https://www2.census.gov/geo/tiger/TIGER2024/TABBLOCK20/tl_2024_26_tabblock20.zip) Census block file and extract it into the `raw_data/tiger_blocks` directory. Then you can run the code with:
+
+```
 cd src/
 uv run redistricting.py
 uv run plotting.py
 ```
-When running for the first time, you may have to download some Census data to your local machine, which will take a few moments.
+When running for the first time, you will have to generate a large number of maps. Depending on how fast your computer is, this may take a while (up to a few hours). 
+The maps you generate will be cached locally, so you can make new plots later without having to go through this step again and again.
 
 ## What this code does
 `redistricting.py` is the meat of the modeling, and does a few things:
