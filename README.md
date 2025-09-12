@@ -10,8 +10,9 @@ Repo for doing analysis of Michigan elections under different proportional elect
 git clone git@github.com:Protect-Democracy/mi-proportional-representation.git
 cd mi-proportional-representation
 uv sync
-uv run src/redistricting.py
-uv run src/plotting.py
+cd src/
+uv run redistricting.py
+uv run plotting.py
 ```
 When running for the first time, you may have to download some Census data to your local machine, which will take a few moments.
 
