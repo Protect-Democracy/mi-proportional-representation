@@ -1,4 +1,4 @@
-# mi-proportional-representation
+# Proportional Representation: analysis of Michigan state legislature
 
 Repo for doing analysis of Michigan elections under different proportional electoral systems.
 
