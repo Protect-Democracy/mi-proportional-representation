@@ -215,9 +215,9 @@ def crossover_plot(data, models, filename=None):
     )
     plt.xlabel("Vote Difference")
     plt.ylabel("Frequency")
-    plt.plot(
-        h[1][:-1], norm.pdf(h[1][:-1], loc=res.x[0], scale=res.x[1]), label="Model fit"
-    )
+    # plt.plot(
+    #     h[1][:-1], norm.pdf(h[1][:-1], loc=res.x[0], scale=res.x[1]), label="Model fit"
+    # )
     plt.legend(loc="upper right")
 
 
@@ -227,6 +227,7 @@ def legislature_histogram(
     scenario_name="OL9",
     partisan_change="no_change",
     n_parties=4,
+    filename=None,
 ):
     fig = plt.figure(figsize=[10, 6])
     bins = np.arange(100)
@@ -412,9 +413,15 @@ def main():
         print("Simulation results not found! Please run redistricting.py first.")
 
     # Examples of examining legislature results
-    legislature_histogram(all_results, scenario_name="OL5")
-    legislature_histogram(all_results, scenario_name="OL9")
-    legislature_histogram(all_results, scenario_name="OL1")
+    legislature_histogram(
+        all_results, scenario_name="OL5", filename="OL5_4_parties_no_change.png"
+    )
+    legislature_histogram(
+        all_results, scenario_name="OL9", filename="OL9_4_parties_no_change.png"
+    )
+    legislature_histogram(
+        all_results, scenario_name="OL1", filename="OL1_4_parties_no_change.png"
+    )
     legislature_histogram(all_results, scenario_name="MMP")
     legislature_histogram(all_results, scenario_name="OL1", n_parties=2)
     legislature_histogram(all_results, scenario_name="OL5", n_parties=2)
